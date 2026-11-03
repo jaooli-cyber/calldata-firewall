@@ -1,77 +1,739 @@
-// A simple Counter contract to get you started.
-// Run `fe test` to see it in action!
+//! A specialized, zero-value calldata firewall for one canonical batch shape.
+//!
+//! The runtime handler deliberately receives no typed fields. It dispatches on
+//! the selector, then inspects the original calldata through ArrayView before
+//! performing any external call. The accepted payload is exactly:
+//!
+//! execute(address target,uint256 gas_limit,bytes[] calls)
+//!
+//! This is not a generic ABI validator. It rejects every layout except the
+//! unique contiguous, zero-padded Solidity encoding of that one shape.
 
-use std::abi::sol
-use std::evm::{Evm, Call}
+use core::abi::{ByteInput, ByteSource}
+use core::num::IntDowncast
+use core::ptr::MemBuffer
+use std::abi::{ArrayView, Bytes, Bytes32, DynArray, dyn_array_from, sol}
+use std::evm::{
+    Address,
+    Call,
+    CallData,
+    Ctx,
+    Evm,
+    RawOps,
+    TSlot,
+    Wei,
+    encode_msg_calldata,
+    is_error,
+    keccak256,
+    revert_error,
+}
+use std::evm::calls::has_min_gas
 
-// Messages define your contract's public interface.
-// Each variant becomes a callable function with a unique selector.
-// The `sol()` const fn computes the standard Solidity selector at compile time.
-msg CounterMsg {
-    #[selector = sol("increment()")]
-    Increment,
-    #[selector = sol("get()")]
-    Get -> u256,
+pub const MAX_CALLS: usize = 8
+pub const MAX_CALL_DATA: usize = 1024
+pub const MAX_TOTAL_DATA: usize = 4096
+pub const RETURNDATA_PREFIX_CAP: usize = 64
+pub const MAX_FORWARD_GAS: u256 = 1000000
+// Gas after each raw call pays the report work, the next bounded calldata copy,
+// and a fresh adjacent admission check. FINAL_RESERVE pays the static return.
+const BETWEEN_CALL_RESERVE: u256 = 100000
+const FINAL_RESERVE: u256 = 300000
+const CALL_OVERHEAD_ALLOWANCE: u256 = 40000
+const U256_MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+
+#[abi]
+pub struct ForwardSummary {
+    pub attempted: u64,
+    pub succeeded: u64,
+    pub failed: u64,
+    pub last_returndata_len: u256,
+    pub last_prefix_len: u64,
+    pub last_prefix_word: u256,
+    pub last_prefix_hash: Bytes32,
 }
 
-// Storage is defined as a regular struct.
-// Its fields are persisted on-chain between calls.
-struct CounterStore {
-    value: u256,
+#[error]
+pub struct ReentrantExecution {}
+
+#[error]
+pub struct InvalidEnvelope {}
+
+#[error]
+pub struct InvalidTarget {}
+
+#[error]
+pub struct InvalidGasLimit { pub supplied: u256 }
+
+#[error]
+pub struct InvalidCallCount { pub supplied: u256 }
+
+#[error]
+pub struct NonCanonicalOffset { pub index: u32 }
+
+#[error]
+pub struct OversizedCall { pub index: u32, pub supplied: u256 }
+
+#[error]
+pub struct OversizedBatch { pub supplied: u256 }
+
+#[error]
+pub struct NonZeroPadding { pub index: u32 }
+
+#[error]
+pub struct NonCanonicalEnd {}
+
+#[error]
+pub struct InsufficientForwardGas { pub index: u32 }
+
+msg FirewallRawMsg {
+    #[selector = 0x7bd5292b]
+    Execute -> ForwardSummary,
 }
 
-// The contract itself: declares its storage and handles messages.
-pub contract Counter {
-    mut store: CounterStore
+// Test and integration callers use the ordinary typed encoder, while the
+// receiver above deliberately bypasses typed argument decoding.
+msg FirewallTypedMsg {
+    #[selector = sol("execute(address,uint256,bytes[])")]
+    Execute { target: Address, gas_limit: u256, calls: DynArray<Bytes> } -> ForwardSummary,
+}
 
-    // The constructor runs once when the contract is deployed.
-    init() uses (mut store) {
-        store.value = 0
+struct ValidatedBatch { target: Address, gas_limit: u256, calls: ArrayView<CallData, Bytes> }
+
+impl Copy for ValidatedBatch {}
+
+fn checked_index(_ index: usize) -> u32 {
+    index.downcast_truncate()
+}
+
+/// Decode and enforce the firewall's canonical encoding policy.
+///
+/// Every check completes before the caller can reach a CALL opcode. The
+/// ArrayView retains only calldata positions; no payload bytes are allocated.
+fn validate_batch(_ cd: CallData) -> ValidatedBatch {
+    if cd.len() < 96 {
+        revert_error(InvalidEnvelope {})
     }
 
-    // The recv block routes incoming messages to handlers.
-    recv CounterMsg {
-        Increment uses (mut store) {
-            store.value = store.value + 1
+    let target_word = cd.word_at(0)
+    if target_word >> 160 != 0 {
+        revert_error(InvalidTarget {})
+    }
+
+    let gas_limit = cd.word_at(32)
+    if gas_limit == 0 || gas_limit > MAX_FORWARD_GAS {
+        revert_error(InvalidGasLimit { supplied: gas_limit })
+    }
+
+    // Three top-level heads occupy 96 bytes; gaps and alternative offsets are
+    // rejected even though a permissive Solidity decoder could accept them.
+    if cd.word_at(64) != 96 {
+        revert_error(InvalidEnvelope {})
+    }
+
+    let calls = cd.array_view<Bytes>(64)
+    let count = calls.len()
+    if count == 0 || count > MAX_CALLS {
+        revert_error(InvalidCallCount { supplied: count as u256 })
+    }
+
+    // In bytes[], each element offset is relative to the beginning of the
+    // element-head region. Canonical tails begin immediately after all heads.
+    var expected_offset = (count as u256) * 32
+    var total_data: usize = 0
+    var index: usize = 0
+    while index < count {
+        if calls.head_word(index) != expected_offset {
+            revert_error(NonCanonicalOffset { index: checked_index(index) })
         }
 
-        Get -> u256 uses (store) {
-            store.value
+        let item = calls.bytes_at(index)
+        let item_len = item.len()
+        if item_len > MAX_CALL_DATA {
+            revert_error(
+                OversizedCall { index: checked_index(index), supplied: item_len as u256 },
+            )
         }
+        if total_data > MAX_TOTAL_DATA - item_len {
+            revert_error(
+                OversizedBatch { supplied: (total_data + item_len) as u256 },
+            )
+        }
+        total_data += item_len
+
+        let padded_len = ((item_len + 31) / 32) * 32
+        let element_end = item.start() + padded_len as u256
+        if element_end > cd.len() {
+            revert_error(NonCanonicalEnd {})
+        }
+
+        // Validate every slack byte, not merely the last word's unused suffix.
+        var padding_index = item_len
+        while padding_index < padded_len {
+            if cd.byte_at(item.start() + padding_index as u256) != 0 {
+                revert_error(NonZeroPadding { index: checked_index(index) })
+            }
+            padding_index += 1
+        }
+
+        expected_offset += 32 + padded_len as u256
+        index += 1
+    }
+
+    // No zero or nonzero trailing bytes are accepted.
+    if calls.heads_pos() + expected_offset != cd.len() {
+        revert_error(NonCanonicalEnd {})
+    }
+
+    ValidatedBatch { target: Address::new(target_word), gas_limit, calls }
+}
+
+fn saturating_add(_ left: u256, _ right: u256) -> u256 {
+    if left > U256_MAX - right {
+        U256_MAX
+    } else {
+        left + right
     }
 }
 
-// Tests can deploy and interact with contracts.
-// Run with: fe test
-#[test]
-fn test_counter() uses (evm: mut Evm) {
-    // Deploy the contract
-    let addr = evm.create2<Counter>(value: Wei::zero(), args: (), salt: 0)
-    assert!(addr.word() != 0)
-
-    // Initially the counter is 0
-    let val: u256 = evm.call(
-        addr: addr,
-        gas: 100000,
-        value: Wei::zero(),
-        message: CounterMsg::Get {}
+/// Exact requirement used by has_min_gas, saturated for arbitrary words.
+fn admission_requirement(_ minimum: u256, _ reserved: u256) -> u256 {
+    let extra = minimum / 63 + if minimum % 63 == 0 { 0 } else { 1 }
+    saturating_add(
+        saturating_add(saturating_add(minimum, extra), reserved),
+        CALL_OVERHEAD_ALLOWANCE,
     )
-    assert!(val == 0)
+}
 
-    // Increment the counter
+/// Suffix reserves for at most MAX_CALLS calls. A successful admission at
+/// index i guarantees the requested callee gas and the reserve needed by i+1.
+fn build_reserves(_ count: usize, _ gas_limit: u256) -> [u256; MAX_CALLS] {
+    var reserves: [u256; MAX_CALLS] = [0; MAX_CALLS]
+    var suffix = FINAL_RESERVE
+    var remaining = count
+    while remaining > 0 {
+        remaining -= 1
+        reserves[remaining] = suffix
+        suffix = saturating_add(
+            BETWEEN_CALL_RESERVE,
+            admission_requirement(gas_limit, reserved: suffix),
+        )
+    }
+    reserves
+}
+
+pub contract CalldataFirewall {
+    mut entered: TSlot<bool>,
+
+    init() {}
+
+    recv FirewallRawMsg {
+        Execute {} -> ForwardSummary uses (mut entered, ctx: Ctx, call: mut Call) {
+            // The handler is intentionally nonpayable: the MVP never receives
+            // or forwards value. The transient guard covers target callbacks.
+            if entered.value {
+                revert_error(ReentrantExecution {})
+            }
+
+            let batch = validate_batch(CallData::with_base(4))
+            if batch.target == Address::zero()
+                || batch.target == ctx.address()
+                || ctx.extcodesize(batch.target) == 0 {
+                revert_error(InvalidTarget {})
+            }
+
+            let count = batch.calls.len()
+            let reserves = build_reserves(count, batch.gas_limit)
+
+            // Zeroing expands memory before the gas checks. Both buffers are
+            // allocated once, then their logical extents are reused per call.
+            var input_scratch = MemBuffer::alloc(MAX_CALL_DATA)
+            input_scratch.truncate(0)
+            var output_scratch = MemBuffer::alloc(RETURNDATA_PREFIX_CAP)
+            output_scratch.truncate(0)
+
+            var succeeded: u64 = 0
+            var failed: u64 = 0
+            var last_returndata_len: u256 = 0
+            var last_prefix_len: u64 = 0
+            var last_prefix_word: u256 = 0
+            var last_prefix_hash = Bytes32 { val: 0 }
+
+            entered.value = true
+            var index: usize = 0
+            while index < count {
+                let item = batch.calls.bytes_at(index)
+                input_scratch.truncate(0)
+                unsafe {
+                    item.copy_to_memory(
+                        dest: input_scratch.ptr(),
+                        src_offset: 0,
+                        len: item.len() as u256,
+                    )
+                    input_scratch.set_len(item.len())
+                }
+                output_scratch.truncate(0)
+
+                // Keep admission adjacent to CALL. All current input/output
+                // memory has already been touched and bounded.
+                let target = batch.target
+                let forward_gas = batch.gas_limit
+                let reserve = reserves[index]
+                let args = input_scratch.span()
+                if !has_min_gas(ctx.gas(), forward_gas, reserve) {
+                    revert_error(InsufficientForwardGas { index: checked_index(index) })
+                }
+                let outcome = call
+                    .raw_call(
+                        addr: target,
+                        gas: forward_gas,
+                        value: Wei::zero(),
+                        args,
+                        ret: mut output_scratch,
+                    )
+
+                if outcome.success() {
+                    succeeded += 1
+                } else {
+                    failed += 1
+                }
+                last_returndata_len = outcome.returndata_len()
+                last_prefix_len = output_scratch.len().downcast_truncate()
+                last_prefix_word = if output_scratch.len() >= 32 {
+                    output_scratch.read_word(0)
+                } else {
+                    0
+                }
+                last_prefix_hash = Bytes32 { val: keccak256(output_scratch.span()) }
+                index += 1
+            }
+            entered.value = false
+
+            ForwardSummary {
+                attempted: count.downcast_truncate(),
+                succeeded,
+                failed,
+                last_returndata_len,
+                last_prefix_len,
+                last_prefix_word,
+                last_prefix_hash,
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Adversarial gate fixtures
+// -----------------------------------------------------------------------------
+
+#[error]
+struct ProbeFailure {}
+
+msg ProbeMsg {
+    #[selector = sol("hit()")]
+    Hit -> u256,
+    #[selector = sol("hits()")]
+    Hits -> u256,
+    #[selector = sol("fail()")]
+    Fail,
+}
+
+contract Probe {
+    mut hits: u256,
+
+    init() uses (mut hits) { hits = 0 }
+
+    recv ProbeMsg {
+        Hit {} -> u256 uses (mut hits) {
+            hits += 1
+            hits
+        }
+
+        Hits {} -> u256 uses (hits) {
+            hits
+        }
+
+        Fail {} {
+            revert_error(ProbeFailure {})
+        }
+    }
+}
+
+msg SinkMsg {
+    #[selector = sol("hits()")]
+    Hits -> u256,
+}
+
+contract BoundarySink {
+    mut hits: u256,
+
+    init() uses (mut hits) { hits = 0 }
+
+    recv {
+        SinkMsg::Hits {} -> u256 uses (hits) {
+            hits
+        }
+
+        _ uses (mut hits) {
+            hits += 1
+        }
+    }
+}
+
+msg BombMsg {
+    #[selector = sol("boom()")]
+    Boom,
+}
+
+contract ReturnBomb {
+    init() {}
+
+    recv BombMsg {
+        Boom {} uses (raw: mut RawOps) {
+            let data = MemBuffer::alloc(65536)
+            raw.return_data(data: data.span())
+        }
+    }
+}
+
+msg ReenterMsg {
+    #[selector = sol("attack()")]
+    Attack -> bool,
+}
+
+contract ReenterTarget {
+    mut firewall: Address,
+
+    init(_ firewall_address: Address) uses (mut firewall) { firewall = firewall_address }
+
+    recv ReenterMsg {
+        Attack {} -> bool uses (firewall, ctx: Ctx, call: mut Call) {
+            let calls: DynArray<Bytes> = dyn_array_from([Bytes::empty()])
+            let outcome = call
+                .try_call(
+                    addr: firewall,
+                    gas: 250000,
+                    value: Wei::zero(),
+                    message: FirewallTypedMsg::Execute {
+                        target: ctx.address(),
+                        gas_limit: 100000,
+                        calls,
+                    },
+                )
+            !outcome.success() && is_error<ReentrantExecution>(outcome.returndata())
+        }
+    }
+}
+
+struct RawResult { success: bool, returndata_len: u256 }
+
+fn raw_firewall(
+    _ firewall: Address,
+    _ data: core::ptr::MemSpan,
+    _ gas: u256,
+    _ value: Wei,
+) -> RawResult
+uses (evm: mut Evm)
+{
+    var output = MemBuffer::alloc(256)
+    let outcome = evm.raw_call(addr: firewall, gas, value, args: data, ret: mut output)
+    RawResult { success: outcome.success(), returndata_len: outcome.returndata_len() }
+}
+
+fn firewall_data(_ target: Address, _ gas_limit: u256, _ calls: DynArray<Bytes>) -> MemBuffer {
+    encode_msg_calldata(FirewallTypedMsg::Execute { target, gas_limit, calls })
+}
+
+fn hit_payload() -> Bytes {
+    let data = encode_msg_calldata(ProbeMsg::Hit {})
+    Bytes::from_payload(source: data.span())
+}
+
+fn fail_payload() -> Bytes {
+    let data = encode_msg_calldata(ProbeMsg::Fail {})
+    Bytes::from_payload(source: data.span())
+}
+
+fn read_hits(_ target: Address) -> u256 uses (evm: mut Evm) {
     evm.call(
-        addr: addr,
+        addr: target,
         gas: 100000,
         value: Wei::zero(),
-        message: CounterMsg::Increment {}
+        message: ProbeMsg::Hits {},
+    )
+}
+
+fn read_sink_hits(_ target: Address) -> u256 uses (evm: mut Evm) {
+    evm.call(
+        addr: target,
+        gas: 100000,
+        value: Wei::zero(),
+        message: SinkMsg::Hits {},
+    )
+}
+
+fn deploy_firewall() -> Address uses (evm: mut Evm) {
+    evm.create2<CalldataFirewall>(value: Wei::zero(), args: (), salt: 0)
+}
+
+#[test]
+fn canonical_batch_forwards_and_classifies() uses (evm: mut Evm) {
+    let firewall = deploy_firewall()
+    let probe = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 1)
+    let calls: DynArray<Bytes> = dyn_array_from([hit_payload(), fail_payload(), hit_payload()])
+
+    let summary: ForwardSummary = evm
+        .call(
+            addr: firewall,
+            gas: 4000000,
+            value: Wei::zero(),
+            message: FirewallTypedMsg::Execute { target: probe, gas_limit: 200000, calls },
+        )
+
+    assert!(summary.attempted == 3)
+    assert!(summary.succeeded == 2)
+    assert!(summary.failed == 1)
+    assert!(summary.last_returndata_len == 32)
+    assert!(summary.last_prefix_len == 32)
+    assert!(summary.last_prefix_word == 2)
+    assert!(read_hits(probe) == 2)
+}
+
+#[test]
+fn malformed_canonicality_matrix_zero_call_trace_oracle() uses (evm: mut Evm) {
+    let firewall = deploy_firewall()
+    let probe = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 2)
+
+    // Noncanonical top-level bytes[] offset.
+    var top = firewall_data(probe, 200000, dyn_array_from([hit_payload()]))
+    top.write_word(offset: 68, value: 128)
+    assert!(
+        !raw_firewall(firewall, top.span(), gas: 2000000, value: Wei::zero()).success,
     )
 
-    // Now it should be 1
-    let val: u256 = evm.call(
-        addr: addr,
-        gas: 100000,
-        value: Wei::zero(),
-        message: CounterMsg::Get {}
+    // Noncanonical first element offset (the canonical value is one head = 32).
+    var element = firewall_data(probe, 200000, dyn_array_from([hit_payload()]))
+    element.write_word(offset: 132, value: 64)
+    assert!(
+        !raw_firewall(firewall, element.span(), gas: 2000000, value: Wei::zero()).success,
     )
-    assert!(val == 1)
+
+    // Even a zero trailing byte is forbidden.
+    let canonical = firewall_data(probe, 200000, dyn_array_from([hit_payload()]))
+    var trailing = MemBuffer::alloc(canonical.len() + 1)
+    trailing.copy_from(dest_offset: 0, source: canonical.span())
+    assert!(
+        !raw_firewall(
+            firewall,
+            trailing.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+
+    // Dirty the first padding byte while preserving the four-byte selector.
+    var dirty = firewall_data(probe, 200000, dyn_array_from([hit_payload()]))
+    dirty.write_word(offset: 196, value: dirty.read_word(196) | (1 << 216))
+    assert!(
+        !raw_firewall(firewall, dirty.span(), gas: 2000000, value: Wei::zero()).success,
+    )
+
+    // Address words with high bits are not canonical.
+    var address = firewall_data(probe, 200000, dyn_array_from([hit_payload()]))
+    address.write_word(offset: 4, value: probe.word() | (1 << 200))
+    assert!(
+        !raw_firewall(firewall, address.span(), gas: 2000000, value: Wei::zero()).success,
+    )
+
+    // A fabricated count whose complete head region is absent.
+    var count = firewall_data(probe, 200000, dyn_array_from([hit_payload()]))
+    count.write_word(offset: 100, value: 9)
+    assert!(
+        !raw_firewall(firewall, count.span(), gas: 2000000, value: Wei::zero()).success,
+    )
+
+    // The final canonical padding byte is mandatory.
+    let missing = firewall_data(probe, 200000, dyn_array_from([hit_payload()]))
+    assert!(
+        !raw_firewall(
+            firewall,
+            missing.slice(offset: 0, len: missing.len() - 1),
+            gas: 2000000,
+            value: Wei::zero(),
+        )
+            .success,
+    )
+
+    // Trace oracle: this test intentionally performs no post-rejection target call.
+}
+
+#[test]
+fn bounds_zero_call_trace_oracle() uses (evm: mut Evm) {
+    let firewall = deploy_firewall()
+    let probe = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 3)
+
+    let too_many: DynArray<Bytes> = dyn_array_from(
+        [
+            hit_payload(),
+            hit_payload(),
+            hit_payload(),
+            hit_payload(),
+            hit_payload(),
+            hit_payload(),
+            hit_payload(),
+            hit_payload(),
+            hit_payload(),
+        ],
+    )
+    let data = firewall_data(probe, 100000, too_many)
+    assert!(
+        !raw_firewall(firewall, data.span(), gas: 3000000, value: Wei::zero()).success,
+    )
+
+    let oversized = MemBuffer::alloc(MAX_CALL_DATA + 1)
+    let data = firewall_data(
+        probe,
+        100000,
+        dyn_array_from([Bytes::from_payload(source: oversized.span())]),
+    )
+    assert!(
+        !raw_firewall(firewall, data.span(), gas: 3000000, value: Wei::zero()).success,
+    )
+
+    let full = MemBuffer::alloc(MAX_CALL_DATA)
+    let data = firewall_data(
+        probe,
+        100000,
+        dyn_array_from(
+            [
+                Bytes::from_payload(source: full.span()),
+                Bytes::from_payload(source: full.span()),
+                Bytes::from_payload(source: full.span()),
+                Bytes::from_payload(source: full.span()),
+                Bytes::from_payload(source: full.span()),
+            ],
+        ),
+    )
+    assert!(
+        !raw_firewall(firewall, data.span(), gas: 5000000, value: Wei::zero()).success,
+    )
+    // Trace oracle: this test intentionally performs no post-rejection target call.
+}
+
+#[test]
+fn accepted_maximum_count_and_data_boundaries_complete() uses (evm: mut Evm) {
+    let firewall = deploy_firewall()
+    let sink = evm.create2<BoundarySink>(value: Wei::zero(), args: (), salt: 8)
+    let half = MemBuffer::alloc(512)
+    let calls: DynArray<Bytes> = dyn_array_from(
+        [
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+        ],
+    )
+
+    let summary: ForwardSummary = evm
+        .call(
+            addr: firewall,
+            gas: 5000000,
+            value: Wei::zero(),
+            message: FirewallTypedMsg::Execute { target: sink, gas_limit: 100000, calls },
+        )
+    assert!(summary.attempted == 8)
+    assert!(summary.succeeded == 8)
+    assert!(summary.failed == 0)
+    assert!(read_sink_hits(sink) == 8)
+
+    let full = MemBuffer::alloc(MAX_CALL_DATA)
+    let summary: ForwardSummary = evm
+        .call(
+            addr: firewall,
+            gas: 2000000,
+            value: Wei::zero(),
+            message: FirewallTypedMsg::Execute {
+                target: sink,
+                gas_limit: 100000,
+                calls: dyn_array_from([Bytes::from_payload(source: full.span())]),
+            },
+        )
+    assert!(summary.attempted == 1)
+    assert!(summary.succeeded == 1)
+    assert!(read_sink_hits(sink) == 9)
+}
+
+#[test(balance = 1)]
+fn value_and_gas_zero_call_trace_oracle() uses (evm: mut Evm) {
+    let firewall = deploy_firewall()
+    let probe = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 4)
+    let data = firewall_data(probe, 500000, dyn_array_from([hit_payload()]))
+
+    // The message handler has no payable annotation.
+    assert!(
+        !raw_firewall(
+            firewall,
+            data.span(),
+            gas: 2000000,
+            value: std::evm::wei(1),
+        ).success,
+    )
+
+    // Requested forwarding gas cannot be admitted from this outer allowance.
+    assert!(
+        !raw_firewall(firewall, data.span(), gas: 150000, value: Wei::zero()).success,
+    )
+    // Trace oracle: this test intentionally performs no post-rejection target call.
+}
+
+#[test]
+fn reentrancy_is_rejected_before_nested_validation() uses (evm: mut Evm) {
+    let firewall = deploy_firewall()
+    let target = evm.create2<ReenterTarget>(value: Wei::zero(), args: (firewall,), salt: 5)
+    let attack = encode_msg_calldata(ReenterMsg::Attack {})
+    let calls: DynArray<Bytes> = dyn_array_from([Bytes::from_payload(source: attack.span())])
+
+    let summary: ForwardSummary = evm
+        .call(
+            addr: firewall,
+            gas: 3000000,
+            value: Wei::zero(),
+            message: FirewallTypedMsg::Execute { target, gas_limit: 600000, calls },
+        )
+    assert!(summary.succeeded == 1)
+    assert!(summary.failed == 0)
+    assert!(summary.last_prefix_word == 1)
+}
+
+#[test]
+fn returndata_copy_is_capped_but_full_length_is_reported() uses (evm: mut Evm) {
+    let firewall = deploy_firewall()
+    let target = evm.create2<ReturnBomb>(value: Wei::zero(), args: (), salt: 6)
+    let boom = encode_msg_calldata(BombMsg::Boom {})
+    let calls: DynArray<Bytes> = dyn_array_from([Bytes::from_payload(source: boom.span())])
+
+    let summary: ForwardSummary = evm
+        .call(
+            addr: firewall,
+            gas: 3000000,
+            value: Wei::zero(),
+            message: FirewallTypedMsg::Execute { target, gas_limit: 1000000, calls },
+        )
+    assert!(summary.succeeded == 1)
+    assert!(summary.last_returndata_len == 65536)
+    assert!(summary.last_prefix_len == 64)
+}
+
+#[test]
+fn reserve_recurrence_is_monotone_and_saturating() {
+    let reserves = build_reserves(3, 200000)
+    assert!(reserves[0] > reserves[1])
+    assert!(reserves[1] > reserves[2])
+    assert!(reserves[2] == FINAL_RESERVE)
+    assert!(
+        admission_requirement(U256_MAX, reserved: U256_MAX) == U256_MAX,
+    )
 }
