@@ -48,6 +48,7 @@ pub struct ForwardSummary {
     pub attempted: u64,
     pub succeeded: u64,
     pub failed: u64,
+    pub success_bitmap: u256,
     pub last_returndata_len: u256,
     pub last_prefix_len: u64,
     pub last_prefix_word: u256,
@@ -62,6 +63,21 @@ pub struct InvalidEnvelope {}
 
 #[error]
 pub struct InvalidTarget {}
+
+#[error]
+pub struct InvalidPolicy {}
+
+#[error]
+pub struct UnauthorizedCaller {}
+
+#[error]
+pub struct PolicyTargetMismatch {}
+
+#[error]
+pub struct ShortCall { pub index: u32, pub supplied: u256 }
+
+#[error]
+pub struct DisallowedSelector { pub index: u32, pub supplied: u32 }
 
 #[error]
 pub struct InvalidGasLimit { pub supplied: u256 }
@@ -107,11 +123,34 @@ fn checked_index(_ index: usize) -> u32 {
     index.downcast_truncate()
 }
 
+fn selector_allowed(
+    _ selector: u32,
+    _ count: u8,
+    _ selector0: u32,
+    _ selector1: u32,
+    _ selector2: u32,
+) -> bool {
+    if selector == selector0 {
+        return true
+    }
+    if count > 1 && selector == selector1 {
+        return true
+    }
+    count > 2 && selector == selector2
+}
+
 /// Decode and enforce the firewall's canonical encoding policy.
 ///
 /// Every check completes before the caller can reach a CALL opcode. The
 /// ArrayView retains only calldata positions; no payload bytes are allocated.
-fn validate_batch(_ cd: CallData) -> ValidatedBatch {
+fn validate_batch(
+    _ cd: CallData,
+    _ allowed_target: Address,
+    _ selector_count: u8,
+    _ selector0: u32,
+    _ selector1: u32,
+    _ selector2: u32,
+) -> ValidatedBatch {
     if cd.len() < 96 {
         revert_error(InvalidEnvelope {})
     }
@@ -119,6 +158,9 @@ fn validate_batch(_ cd: CallData) -> ValidatedBatch {
     let target_word = cd.word_at(0)
     if target_word >> 160 != 0 {
         revert_error(InvalidTarget {})
+    }
+    if target_word != allowed_target.word() {
+        revert_error(PolicyTargetMismatch {})
     }
 
     let gas_limit = cd.word_at(32)
@@ -166,6 +208,24 @@ fn validate_batch(_ cd: CallData) -> ValidatedBatch {
         let element_end = item.start() + padded_len as u256
         if element_end > cd.len() {
             revert_error(NonCanonicalEnd {})
+        }
+
+        if item_len < 4 {
+            revert_error(
+                ShortCall { index: checked_index(index), supplied: item_len as u256 },
+            )
+        }
+        let selector: u32 = (item.word_at(0) >> 224).downcast_truncate()
+        if !selector_allowed(
+            selector,
+            selector_count,
+            selector0,
+            selector1,
+            selector2,
+        ) {
+            revert_error(
+                DisallowedSelector { index: checked_index(index), supplied: selector },
+            )
         }
 
         // Validate every slack byte, not merely the last word's unused suffix.
@@ -224,19 +284,83 @@ fn build_reserves(_ count: usize, _ gas_limit: u256) -> [u256; MAX_CALLS] {
 }
 
 pub contract CalldataFirewall {
+    authorized_caller: Address,
+    allowed_target: Address,
+    selector_count: u8,
+    selector0: u32,
+    selector1: u32,
+    selector2: u32,
     mut entered: TSlot<bool>,
 
-    init() {}
+    init(
+        _ configured_caller: Address,
+        _ configured_target: Address,
+        _ configured_count: u8,
+        _ configured_selector0: u32,
+        _ configured_selector1: u32,
+        _ configured_selector2: u32,
+    )
+    uses (
+        mut authorized_caller,
+        mut allowed_target,
+        mut selector_count,
+        mut selector0,
+        mut selector1,
+        mut selector2,
+        ctx: Ctx,
+    )
+    {
+        if configured_caller == Address::zero()
+            || configured_target == Address::zero()
+            || configured_target == ctx.address()
+            || ctx.extcodesize(configured_target) == 0
+            || configured_count == 0
+            || configured_count > 3
+            || (configured_count == 1 && (configured_selector1 != 0 || configured_selector2 != 0))
+            || (configured_count == 2 && configured_selector2 != 0)
+            || (configured_count > 1 && configured_selector0 == configured_selector1)
+            || (configured_count > 2
+                && (configured_selector0 == configured_selector2
+                    || configured_selector1 == configured_selector2)) {
+            revert_error(InvalidPolicy {})
+        }
+        authorized_caller = configured_caller
+        allowed_target = configured_target
+        selector_count = configured_count
+        selector0 = configured_selector0
+        selector1 = configured_selector1
+        selector2 = configured_selector2
+    }
 
     recv FirewallRawMsg {
-        Execute {} -> ForwardSummary uses (mut entered, ctx: Ctx, call: mut Call) {
+        Execute {} -> ForwardSummary uses (
+            authorized_caller,
+            allowed_target,
+            selector_count,
+            selector0,
+            selector1,
+            selector2,
+            mut entered,
+            ctx: Ctx,
+            call: mut Call,
+        ) {
             // The handler is intentionally nonpayable: the MVP never receives
             // or forwards value. The transient guard covers target callbacks.
             if entered.value {
                 revert_error(ReentrantExecution {})
             }
+            if ctx.caller() != authorized_caller {
+                revert_error(UnauthorizedCaller {})
+            }
 
-            let batch = validate_batch(CallData::with_base(4))
+            let batch = validate_batch(
+                CallData::with_base(4),
+                allowed_target,
+                selector_count,
+                selector0,
+                selector1,
+                selector2,
+            )
             if batch.target == Address::zero()
                 || batch.target == ctx.address()
                 || ctx.extcodesize(batch.target) == 0 {
@@ -255,6 +379,7 @@ pub contract CalldataFirewall {
 
             var succeeded: u64 = 0
             var failed: u64 = 0
+            var success_bitmap: u256 = 0
             var last_returndata_len: u256 = 0
             var last_prefix_len: u64 = 0
             var last_prefix_word: u256 = 0
@@ -295,6 +420,7 @@ pub contract CalldataFirewall {
 
                 if outcome.success() {
                     succeeded += 1
+                    success_bitmap |= (1 as u256) << (index as u256)
                 } else {
                     failed += 1
                 }
@@ -314,6 +440,7 @@ pub contract CalldataFirewall {
                 attempted: count.downcast_truncate(),
                 succeeded,
                 failed,
+                success_bitmap,
                 last_returndata_len,
                 last_prefix_len,
                 last_prefix_word,
@@ -326,6 +453,16 @@ pub contract CalldataFirewall {
 // -----------------------------------------------------------------------------
 // Adversarial gate fixtures
 // -----------------------------------------------------------------------------
+
+const PROBE_HIT_SELECTOR: u32 = sol("hit()")
+const PROBE_FAIL_SELECTOR: u32 = sol("fail()")
+const BOUNDARY_SELECTOR: u32 = 0xb01dface
+const SCRATCH_SELECTOR: u32 = 0x5ca7c001
+const BURNER_SELECTOR: u32 = 0xb07e0001
+const BOMB_SELECTOR: u32 = sol("boom()")
+const EMPTY_SELECTOR: u32 = sol("empty()")
+const FAIL_EMPTY_SELECTOR: u32 = sol("failEmpty()")
+const REENTER_SELECTOR: u32 = sol("attack(address)")
 
 #[error]
 struct ProbeFailure {}
@@ -472,17 +609,15 @@ contract ReturnBomb {
 }
 
 msg ReenterMsg {
-    #[selector = sol("attack()")]
-    Attack -> bool,
+    #[selector = sol("attack(address)")]
+    Attack { firewall: Address } -> bool,
 }
 
 contract ReenterTarget {
-    mut firewall: Address,
-
-    init(_ firewall_address: Address) uses (mut firewall) { firewall = firewall_address }
+    init() {}
 
     recv ReenterMsg {
-        Attack {} -> bool uses (firewall, ctx: Ctx, call: mut Call) {
+        Attack { firewall } -> bool uses (ctx: Ctx, call: mut Call) {
             let calls: DynArray<Bytes> = dyn_array_from([Bytes::empty()])
             let outcome = call
                 .try_call(
@@ -496,6 +631,63 @@ contract ReenterTarget {
                     },
                 )
             !outcome.success() && is_error<ReentrantExecution>(outcome.returndata())
+        }
+    }
+}
+
+msg ControllerProxyMsg {
+    #[selector = sol("tryExecute(address,address)")]
+    TryExecute { firewall: Address, target: Address } -> bool,
+}
+
+contract ControllerProxy {
+    init() {}
+
+    recv ControllerProxyMsg {
+        TryExecute { firewall, target } -> bool uses (call: mut Call) {
+            let outcome = call
+                .try_call(
+                    addr: firewall,
+                    gas: 500000,
+                    value: Wei::zero(),
+                    message: FirewallTypedMsg::Execute {
+                        target,
+                        gas_limit: 100000,
+                        calls: dyn_array_from([hit_payload()]),
+                    },
+                )
+            !outcome.success() && is_error<UnauthorizedCaller>(outcome.returndata())
+        }
+    }
+}
+
+msg PolicyFactoryMsg {
+    #[selector = sol(
+        "deploy(address,address,uint8,uint32,uint32,uint32,uint256)",
+    )]
+    Deploy {
+        caller: Address,
+        target: Address,
+        count: u8,
+        selector0: u32,
+        selector1: u32,
+        selector2: u32,
+        salt: u256,
+    } -> Address,
+}
+
+contract PolicyFactory {
+    init() {}
+
+    recv PolicyFactoryMsg {
+        Deploy { caller, target, count, selector0, selector1, selector2, salt } -> Address
+        uses (evm: mut Evm)
+        {
+            evm.create2<CalldataFirewall>(
+                value: Wei::zero(),
+                args: (caller, target, count, selector0, selector1, selector2),
+                salt,
+            )
         }
     }
 }
@@ -528,7 +720,13 @@ uses (create: mut Create)
     target
 }
 
-struct RawResult { success: bool, returndata_len: u256 }
+struct RawResult {
+    success: bool,
+    returndata_len: u256,
+    error_selector: u32,
+    error_arg0: u256,
+    error_arg1: u256,
+}
 
 fn raw_firewall(
     _ firewall: Address,
@@ -540,7 +738,29 @@ uses (evm: mut Evm)
 {
     var output = MemBuffer::alloc(256)
     let outcome = evm.raw_call(addr: firewall, gas, value, args: data, ret: mut output)
-    RawResult { success: outcome.success(), returndata_len: outcome.returndata_len() }
+    let output_len = output.len()
+    let error_selector: u32 = if output_len >= 4 {
+        (unsafe { output.capacity_span().read_word(0) } >> 224).downcast_truncate()
+    } else {
+        0
+    }
+    let error_arg0 = if output_len >= 36 {
+        output.read_word(4)
+    } else {
+        0
+    }
+    let error_arg1 = if output_len >= 68 {
+        output.read_word(36)
+    } else {
+        0
+    }
+    RawResult {
+        success: outcome.success(),
+        returndata_len: outcome.returndata_len(),
+        error_selector,
+        error_arg0,
+        error_arg1,
+    }
 }
 
 fn firewall_data(_ target: Address, _ gas_limit: u256, _ calls: DynArray<Bytes>) -> MemBuffer {
@@ -575,14 +795,56 @@ fn read_sink_hits(_ target: Address) -> u256 uses (evm: mut Evm) {
     )
 }
 
-fn deploy_firewall() -> Address uses (evm: mut Evm) {
-    evm.create2<CalldataFirewall>(value: Wei::zero(), args: (), salt: 0)
+fn deploy_firewall(
+    _ target: Address,
+    _ count: u8,
+    _ selector0: u32,
+    _ selector1: u32,
+    _ selector2: u32,
+) -> Address
+uses (evm: mut Evm, ctx: Ctx)
+{
+    evm.create2<CalldataFirewall>(
+        value: Wei::zero(),
+        args: (ctx.address(), target, count, selector0, selector1, selector2),
+        salt: 0,
+    )
+}
+
+fn policy_deployment_rejected(
+    _ factory: Address,
+    _ caller: Address,
+    _ target: Address,
+    _ count: u8,
+    _ selector0: u32,
+    _ selector1: u32,
+    _ selector2: u32,
+    _ salt: u256,
+) -> bool
+uses (evm: mut Evm)
+{
+    let outcome = evm
+        .try_call(
+            addr: factory,
+            gas: 2000000,
+            value: Wei::zero(),
+            message: PolicyFactoryMsg::Deploy {
+                caller,
+                target,
+                count,
+                selector0,
+                selector1,
+                selector2,
+                salt,
+            },
+        )
+    !outcome.success() && is_error<InvalidPolicy>(outcome.returndata())
 }
 
 #[test]
-fn canonical_batch_forwards_and_classifies() uses (evm: mut Evm) {
-    let firewall = deploy_firewall()
+fn canonical_batch_forwards_and_classifies() uses (evm: mut Evm, ctx: Ctx) {
     let probe = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 1)
+    let firewall = deploy_firewall(probe, 2, PROBE_HIT_SELECTOR, PROBE_FAIL_SELECTOR, 0)
     let calls: DynArray<Bytes> = dyn_array_from([hit_payload(), fail_payload(), hit_payload()])
 
     let summary: ForwardSummary = evm
@@ -596,16 +858,38 @@ fn canonical_batch_forwards_and_classifies() uses (evm: mut Evm) {
     assert!(summary.attempted == 3)
     assert!(summary.succeeded == 2)
     assert!(summary.failed == 1)
+    assert!(summary.success_bitmap == 0b101)
     assert!(summary.last_returndata_len == 32)
     assert!(summary.last_prefix_len == 32)
     assert!(summary.last_prefix_word == 2)
     assert!(read_hits(probe) == 2)
+    let inverse_calls: DynArray<Bytes> = dyn_array_from(
+        [fail_payload(), hit_payload(), fail_payload()],
+    )
+    let inverse: ForwardSummary = evm
+        .call(
+            addr: firewall,
+            gas: 4000000,
+            value: Wei::zero(),
+            message: FirewallTypedMsg::Execute {
+                target: probe,
+                gas_limit: 200000,
+                calls: inverse_calls,
+            },
+        )
+    assert!(inverse.attempted == 3)
+    assert!(inverse.succeeded == 1)
+    assert!(inverse.failed == 2)
+    assert!(inverse.success_bitmap == 0b010)
+    assert!(read_hits(probe) == 3)
 }
 
 #[test]
-fn malformed_canonicality_matrix_zero_call_trace_oracle() uses (evm: mut Evm) {
-    let firewall = deploy_firewall()
+fn malformed_canonicality_matrix_zero_call_trace_oracle()
+uses (evm: mut Evm, ctx: Ctx)
+{
     let probe = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 2)
+    let firewall = deploy_firewall(probe, 1, PROBE_HIT_SELECTOR, 0, 0)
 
     // Noncanonical top-level bytes[] offset.
     var top = firewall_data(probe, 200000, dyn_array_from([hit_payload()]))
@@ -671,9 +955,9 @@ fn malformed_canonicality_matrix_zero_call_trace_oracle() uses (evm: mut Evm) {
 }
 
 #[test]
-fn bounds_zero_call_trace_oracle() uses (evm: mut Evm) {
-    let firewall = deploy_firewall()
+fn bounds_zero_call_trace_oracle() uses (evm: mut Evm, ctx: Ctx) {
     let probe = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 3)
+    let firewall = deploy_firewall(probe, 1, PROBE_HIT_SELECTOR, 0, 0)
 
     let too_many: DynArray<Bytes> = dyn_array_from(
         [
@@ -724,9 +1008,11 @@ fn bounds_zero_call_trace_oracle() uses (evm: mut Evm) {
 }
 
 #[test]
-fn raw_rejection_hardening_zero_call_trace_oracle() uses (evm: mut Evm) {
-    let firewall = deploy_firewall()
+fn raw_rejection_hardening_zero_call_trace_oracle()
+uses (evm: mut Evm, ctx: Ctx)
+{
     let probe = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 9)
+    let firewall = deploy_firewall(probe, 1, PROBE_HIT_SELECTOR, 0, 0)
 
     let canonical = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
 
@@ -955,10 +1241,248 @@ fn raw_rejection_hardening_zero_call_trace_oracle() uses (evm: mut Evm) {
 }
 
 #[test]
-fn accepted_maximum_count_and_data_boundaries_complete() uses (evm: mut Evm) {
-    let firewall = deploy_firewall()
+fn constructor_policy_matrix_is_fail_closed() uses (evm: mut Evm, ctx: Ctx) {
+    let target = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 16)
+    let factory = evm.create2<PolicyFactory>(value: Wei::zero(), args: (), salt: 17)
+
+    assert!(
+        policy_deployment_rejected(
+            factory,
+            Address::zero(),
+            target,
+            1,
+            PROBE_HIT_SELECTOR,
+            0,
+            0,
+            1,
+        ),
+    )
+    assert!(
+        policy_deployment_rejected(
+            factory,
+            ctx.address(),
+            Address::zero(),
+            1,
+            PROBE_HIT_SELECTOR,
+            0,
+            0,
+            2,
+        ),
+    )
+    assert!(
+        policy_deployment_rejected(
+            factory,
+            ctx.address(),
+            Address::new(0xdead),
+            1,
+            PROBE_HIT_SELECTOR,
+            0,
+            0,
+            3,
+        ),
+    )
+    assert!(
+        policy_deployment_rejected(factory, ctx.address(), target, 0, 0, 0, 0, 4),
+    )
+    assert!(
+        policy_deployment_rejected(
+            factory,
+            ctx.address(),
+            target,
+            4,
+            PROBE_HIT_SELECTOR,
+            PROBE_FAIL_SELECTOR,
+            BOUNDARY_SELECTOR,
+            5,
+        ),
+    )
+    assert!(
+        policy_deployment_rejected(
+            factory,
+            ctx.address(),
+            target,
+            1,
+            PROBE_HIT_SELECTOR,
+            PROBE_FAIL_SELECTOR,
+            0,
+            6,
+        ),
+    )
+    assert!(
+        policy_deployment_rejected(
+            factory,
+            ctx.address(),
+            target,
+            2,
+            PROBE_HIT_SELECTOR,
+            PROBE_FAIL_SELECTOR,
+            BOUNDARY_SELECTOR,
+            7,
+        ),
+    )
+    assert!(
+        policy_deployment_rejected(
+            factory,
+            ctx.address(),
+            target,
+            2,
+            PROBE_HIT_SELECTOR,
+            PROBE_HIT_SELECTOR,
+            0,
+            8,
+        ),
+    )
+    assert!(
+        policy_deployment_rejected(
+            factory,
+            ctx.address(),
+            target,
+            3,
+            PROBE_HIT_SELECTOR,
+            PROBE_FAIL_SELECTOR,
+            PROBE_HIT_SELECTOR,
+            9,
+        ),
+    )
+
+    // Deliberate policy choices: count, not zero value, marks active selector
+    // slots, and a venue may also be its own forwarding target.
+    let zero_selector: Address = evm
+        .call(
+            addr: factory,
+            gas: 2000000,
+            value: Wei::zero(),
+            message: PolicyFactoryMsg::Deploy {
+                caller: target,
+                target,
+                count: 1,
+                selector0: 0,
+                selector1: 0,
+                selector2: 0,
+                salt: 10,
+            },
+        )
+    assert!(ctx.extcodesize(zero_selector) > 0)
+}
+#[test]
+fn policy_rejections_zero_target_call_trace_oracle()
+uses (evm: mut Evm, ctx: Ctx)
+{
+    let target = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 13)
+    let alternate = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 14)
+    let firewall = deploy_firewall(target, 1, PROBE_HIT_SELECTOR, 0, 0)
+    let proxy = evm.create2<ControllerProxy>(value: Wei::zero(), args: (), salt: 15)
+
+    let unauthorized: bool = evm
+        .call(
+            addr: proxy,
+            gas: 1000000,
+            value: Wei::zero(),
+            message: ControllerProxyMsg::TryExecute { firewall, target },
+        )
+    assert!(unauthorized)
+
+    let mismatch = firewall_data(alternate, 100000, dyn_array_from([hit_payload()]))
+    let mismatch_result = raw_firewall(
+        firewall,
+        mismatch.span(),
+        gas: 2000000,
+        value: Wei::zero(),
+    )
+    assert!(!mismatch_result.success)
+    assert!(
+        mismatch_result.error_selector == sol("PolicyTargetMismatch()"),
+    )
+
+    let short0 = firewall_data(target, 100000, dyn_array_from([Bytes::empty()]))
+    let short0_result = raw_firewall(firewall, short0.span(), gas: 2000000, value: Wei::zero())
+    assert!(!short0_result.success)
+    assert!(
+        short0_result.error_selector == sol("ShortCall(uint32,uint256)"),
+    )
+    assert!(short0_result.error_arg0 == 0)
+    assert!(short0_result.error_arg1 == 0)
+
+    let short1 = firewall_data(
+        target,
+        100000,
+        dyn_array_from([Bytes::from_word_prefix(word: 0, len: 1)]),
+    )
+    let short1_result = raw_firewall(firewall, short1.span(), gas: 2000000, value: Wei::zero())
+    assert!(!short1_result.success)
+    assert!(
+        short1_result.error_selector == sol("ShortCall(uint32,uint256)"),
+    )
+    assert!(short1_result.error_arg0 == 0)
+    assert!(short1_result.error_arg1 == 1)
+
+    let short2 = firewall_data(
+        target,
+        100000,
+        dyn_array_from([Bytes::from_word_prefix(word: 0, len: 2)]),
+    )
+    let short2_result = raw_firewall(firewall, short2.span(), gas: 2000000, value: Wei::zero())
+    assert!(!short2_result.success)
+    assert!(
+        short2_result.error_selector == sol("ShortCall(uint32,uint256)"),
+    )
+    assert!(short2_result.error_arg0 == 0)
+    assert!(short2_result.error_arg1 == 2)
+
+    let short3 = firewall_data(
+        target,
+        100000,
+        dyn_array_from([Bytes::from_word_prefix(word: 0, len: 3)]),
+    )
+    let short3_result = raw_firewall(firewall, short3.span(), gas: 2000000, value: Wei::zero())
+    assert!(!short3_result.success)
+    assert!(
+        short3_result.error_selector == sol("ShortCall(uint32,uint256)"),
+    )
+    assert!(short3_result.error_arg0 == 0)
+    assert!(short3_result.error_arg1 == 3)
+
+    let denied_first = Bytes::from_word_prefix(word: (0xdeadbeef as u256) << 224, len: 4)
+    let denied = firewall_data(target, 100000, dyn_array_from([denied_first]))
+    let denied_result = raw_firewall(firewall, denied.span(), gas: 2000000, value: Wei::zero())
+    assert!(!denied_result.success)
+    assert!(
+        denied_result.error_selector == sol("DisallowedSelector(uint32,uint32)"),
+    )
+    assert!(denied_result.error_arg0 == 0)
+    assert!(denied_result.error_arg1 == 0xdeadbeef)
+
+    let denied_last = Bytes::from_word_prefix(word: (0xdeadbeef as u256) << 224, len: 4)
+    let last_denied = firewall_data(
+        target,
+        100000,
+        dyn_array_from([hit_payload(), denied_last]),
+    )
+    let last_denied_result = raw_firewall(
+        firewall,
+        last_denied.span(),
+        gas: 2000000,
+        value: Wei::zero(),
+    )
+    assert!(!last_denied_result.success)
+    assert!(
+        last_denied_result.error_selector == sol("DisallowedSelector(uint32,uint32)"),
+    )
+    assert!(last_denied_result.error_arg0 == 1)
+    assert!(last_denied_result.error_arg1 == 0xdeadbeef)
+
+    // Trace oracle: proxy setup calls are expected, but the firewall must make
+    // zero direct calls to either target for every rejected invocation above.
+}
+
+#[test]
+fn accepted_maximum_count_and_data_boundaries_complete()
+uses (evm: mut Evm, ctx: Ctx)
+{
     let sink = evm.create2<BoundarySink>(value: Wei::zero(), args: (), salt: 8)
-    let half = MemBuffer::alloc(512)
+    let firewall = deploy_firewall(sink, 1, BOUNDARY_SELECTOR, 0, 0)
+    var half = MemBuffer::alloc(512)
+    half.write_word(offset: 0, value: (BOUNDARY_SELECTOR as u256) << 224)
     let calls: DynArray<Bytes> = dyn_array_from(
         [
             Bytes::from_payload(source: half.span()),
@@ -982,9 +1506,11 @@ fn accepted_maximum_count_and_data_boundaries_complete() uses (evm: mut Evm) {
     assert!(summary.attempted == 8)
     assert!(summary.succeeded == 8)
     assert!(summary.failed == 0)
+    assert!(summary.success_bitmap == 0xff)
     assert!(read_sink_hits(sink) == 8)
 
-    let full = MemBuffer::alloc(MAX_CALL_DATA)
+    var full = MemBuffer::alloc(MAX_CALL_DATA)
+    full.write_word(offset: 0, value: (BOUNDARY_SELECTOR as u256) << 224)
     let summary: ForwardSummary = evm
         .call(
             addr: firewall,
@@ -997,14 +1523,15 @@ fn accepted_maximum_count_and_data_boundaries_complete() uses (evm: mut Evm) {
             },
         )
     assert!(summary.attempted == 1)
+    assert!(summary.success_bitmap == 1)
     assert!(summary.succeeded == 1)
     assert!(read_sink_hits(sink) == 9)
 }
 
 #[test(balance = 1)]
-fn value_and_gas_zero_call_trace_oracle() uses (evm: mut Evm) {
-    let firewall = deploy_firewall()
+fn value_and_gas_zero_call_trace_oracle() uses (evm: mut Evm, ctx: Ctx) {
     let probe = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 4)
+    let firewall = deploy_firewall(probe, 1, PROBE_HIT_SELECTOR, 0, 0)
     let data = firewall_data(probe, 500000, dyn_array_from([hit_payload()]))
 
     // The message handler has no payable annotation.
@@ -1033,7 +1560,9 @@ uses (evm: mut Evm, create: mut Create, ctx: Ctx)
     // outer allowance is a source-test hypothesis, not a runtime calibration.
     let burner = deploy_tiny_runtime(0x5b600056, 4, 10)
     assert!(ctx.extcodesize(burner) == 4)
-    let half = MemBuffer::alloc(512)
+    var half = MemBuffer::alloc(512)
+    half.write_word(offset: 0, value: (BURNER_SELECTOR as u256) << 224)
+    let firewall = deploy_firewall(burner, 1, BURNER_SELECTOR, 0, 0)
     let calls: DynArray<Bytes> = dyn_array_from(
         [
             Bytes::from_payload(source: half.span()),
@@ -1049,7 +1578,7 @@ uses (evm: mut Evm, create: mut Create, ctx: Ctx)
 
     let summary: ForwardSummary = evm
         .call(
-            addr: deploy_firewall(),
+            addr: firewall,
             gas: 2600000,
             value: Wei::zero(),
             message: FirewallTypedMsg::Execute { target: burner, gas_limit: 100000, calls },
@@ -1057,15 +1586,19 @@ uses (evm: mut Evm, create: mut Create, ctx: Ctx)
     assert!(summary.attempted == 8)
     assert!(summary.succeeded == 0)
     assert!(summary.failed == 8)
+    assert!(summary.success_bitmap == 0)
     assert!(summary.last_returndata_len == 0)
     assert!(summary.last_prefix_len == 0)
 }
 
 #[test]
-fn input_scratch_reuse_1024_zero_one_is_observable() uses (evm: mut Evm) {
-    let firewall = deploy_firewall()
+fn input_scratch_reuse_1024_four_five_is_observable()
+uses (evm: mut Evm, ctx: Ctx)
+{
     let observer = evm.create2<ScratchObserver>(value: Wei::zero(), args: (), salt: 11)
-    let first_marker = 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    let firewall = deploy_firewall(observer, 1, SCRATCH_SELECTOR, 0, 0)
+    let selector_word = (SCRATCH_SELECTOR as u256) << 224
+    let first_marker = selector_word | 0xaaaaaaaa
     let last_marker = 0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
     var large = MemBuffer::alloc(MAX_CALL_DATA)
     large.write_word(offset: 0, value: first_marker)
@@ -1073,8 +1606,8 @@ fn input_scratch_reuse_1024_zero_one_is_observable() uses (evm: mut Evm) {
     let calls: DynArray<Bytes> = dyn_array_from(
         [
             Bytes::from_payload(source: large.span()),
-            Bytes::empty(),
-            Bytes::from_word_prefix(word: 0xbb << 248, len: 1),
+            Bytes::from_word_prefix(word: selector_word, len: 4),
+            Bytes::from_word_prefix(word: selector_word | 0xbb << 216, len: 5),
         ],
     )
 
@@ -1088,6 +1621,7 @@ fn input_scratch_reuse_1024_zero_one_is_observable() uses (evm: mut Evm) {
     assert!(summary.attempted == 3)
     assert!(summary.succeeded == 3)
     assert!(summary.failed == 0)
+    assert!(summary.success_bitmap == 0b111)
 
     let observed: (u256, u256, u256, u256, u256, u256, u256, u256) = evm
         .call(
@@ -1098,20 +1632,26 @@ fn input_scratch_reuse_1024_zero_one_is_observable() uses (evm: mut Evm) {
         )
     assert!(observed.0 == 3)
     assert!(observed.1 == 1024)
-    assert!(observed.2 == 0)
-    assert!(observed.3 == 1)
+    assert!(observed.2 == 4)
+    assert!(observed.3 == 5)
     assert!(observed.4 == first_marker)
-    assert!(observed.5 == 0)
-    assert!(observed.6 == 0xbb << 248)
+    assert!(observed.5 == selector_word)
+    assert!(observed.6 == selector_word | 0xbb << 216)
     assert!(observed.7 == last_marker)
 }
 
 #[test]
 fn output_scratch_bomb_then_empty_or_failure_is_not_stale()
-uses (evm: mut Evm)
+uses (evm: mut Evm, ctx: Ctx)
 {
-    let firewall = deploy_firewall()
     let target = evm.create2<ReturnBomb>(value: Wei::zero(), args: (), salt: 12)
+    let firewall = deploy_firewall(
+        target,
+        3,
+        BOMB_SELECTOR,
+        EMPTY_SELECTOR,
+        FAIL_EMPTY_SELECTOR,
+    )
     let boom = encode_msg_calldata(BombMsg::Boom {})
     let empty = encode_msg_calldata(BombMsg::Empty {})
     let calls: DynArray<Bytes> = dyn_array_from(
@@ -1127,6 +1667,7 @@ uses (evm: mut Evm)
         )
     assert!(after_empty.succeeded == 2)
     assert!(after_empty.failed == 0)
+    assert!(after_empty.success_bitmap == 0b11)
     assert!(after_empty.last_returndata_len == 0)
     assert!(after_empty.last_prefix_len == 0)
     assert!(after_empty.last_prefix_word == 0)
@@ -1148,6 +1689,7 @@ uses (evm: mut Evm)
         )
     assert!(after_failure.succeeded == 1)
     assert!(after_failure.failed == 1)
+    assert!(after_failure.success_bitmap == 0b01)
     assert!(after_failure.last_returndata_len == 0)
     assert!(after_failure.last_prefix_len == 0)
     assert!(after_failure.last_prefix_word == 0)
@@ -1157,10 +1699,12 @@ uses (evm: mut Evm)
 }
 
 #[test]
-fn reentrancy_is_rejected_before_nested_validation() uses (evm: mut Evm) {
-    let firewall = deploy_firewall()
-    let target = evm.create2<ReenterTarget>(value: Wei::zero(), args: (firewall,), salt: 5)
-    let attack = encode_msg_calldata(ReenterMsg::Attack {})
+fn reentrancy_is_rejected_before_nested_validation()
+uses (evm: mut Evm, ctx: Ctx)
+{
+    let target = evm.create2<ReenterTarget>(value: Wei::zero(), args: (), salt: 5)
+    let firewall = deploy_firewall(target, 1, REENTER_SELECTOR, 0, 0)
+    let attack = encode_msg_calldata(ReenterMsg::Attack { firewall })
     let calls: DynArray<Bytes> = dyn_array_from([Bytes::from_payload(source: attack.span())])
 
     let summary: ForwardSummary = evm
@@ -1172,13 +1716,16 @@ fn reentrancy_is_rejected_before_nested_validation() uses (evm: mut Evm) {
         )
     assert!(summary.succeeded == 1)
     assert!(summary.failed == 0)
+    assert!(summary.success_bitmap == 1)
     assert!(summary.last_prefix_word == 1)
 }
 
 #[test]
-fn returndata_copy_is_capped_but_full_length_is_reported() uses (evm: mut Evm) {
-    let firewall = deploy_firewall()
+fn returndata_copy_is_capped_but_full_length_is_reported()
+uses (evm: mut Evm, ctx: Ctx)
+{
     let target = evm.create2<ReturnBomb>(value: Wei::zero(), args: (), salt: 6)
+    let firewall = deploy_firewall(target, 1, BOMB_SELECTOR, 0, 0)
     let boom = encode_msg_calldata(BombMsg::Boom {})
     let calls: DynArray<Bytes> = dyn_array_from([Bytes::from_payload(source: boom.span())])
 
@@ -1190,6 +1737,7 @@ fn returndata_copy_is_capped_but_full_length_is_reported() uses (evm: mut Evm) {
             message: FirewallTypedMsg::Execute { target, gas_limit: 1000000, calls },
         )
     assert!(summary.succeeded == 1)
+    assert!(summary.success_bitmap == 1)
     assert!(summary.last_returndata_len == 65536)
     assert!(summary.last_prefix_len == 64)
 }

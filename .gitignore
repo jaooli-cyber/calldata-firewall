@@ -1,3 +1,5 @@
 .contest-tools/
 evidence/
 out/
+build/
+demo/node_modules/

@@ -45,5 +45,13 @@ submission evidence. Build products, traces, metrics, and demo evidence for
 judging will be regenerated from the exact submitted commit by tracked scripts
 and CI.
 
+The immutable caller/target/selector policy, per-index success bitmap, and their
+additional adversarial tests are post-gate contest work. Code snapshot
+`6d3b43ce8ed49f033b0f883a73a404bb8bf5c6bd` underlies the current local
+worktree, where `make verify` passes all tests, traces, reproducibility checks,
+combined-ABI checks, and Cancun/Shanghai demo assertions. The final candidate
+commit and evidence hashes remain TBD and must be verified again after pinning.
+
 AI assistance is disclosed for research, design review, Red Team analysis,
 implementation support, test planning, documentation, and review. All claims
+must remain reproducible from the submitted repository.

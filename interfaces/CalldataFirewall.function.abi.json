@@ -34,6 +34,10 @@
             "type": "uint64"
           },
           {
+            "name": "success_bitmap",
+            "type": "uint256"
+          },
+          {
             "name": "last_returndata_len",
             "type": "uint256"
           },
