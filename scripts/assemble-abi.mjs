@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -16,35 +17,145 @@ const readArray = (file) => {
 
 const generated = readArray(generatedPath);
 const fragment = readArray(fragmentPath);
-if (!generated.some((entry) => entry.type === "constructor")) {
-  throw new Error("generated ABI has no constructor");
-}
-if (generated.some((entry) => entry.type === "function" && entry.name === "execute")) {
-  throw new Error("generated ABI unexpectedly contains execute; raw ABI assumptions changed");
-}
-if (
-  fragment.length !== 1 ||
-  fragment[0].type !== "function" ||
-  fragment[0].name !== "execute"
-) {
-  throw new Error("function fragment must contain exactly execute");
-}
-
-const components = fragment[0].outputs?.[0]?.components ?? [];
-const names = components.map((component) => component.name);
-const expected = [
-  "attempted",
-  "succeeded",
-  "failed",
-  "success_bitmap",
-  "last_returndata_len",
-  "last_prefix_len",
-  "last_prefix_word",
-  "last_prefix_hash",
+const constructor = {
+  type: "constructor",
+  inputs: [
+    { name: "configured_caller", type: "address" },
+    { name: "configured_target", type: "address" },
+    { name: "configured_count", type: "uint8" },
+    { name: "configured_selector0", type: "uint32" },
+    { name: "configured_selector1", type: "uint32" },
+    { name: "configured_selector2", type: "uint32" },
+  ],
+  stateMutability: "nonpayable",
+};
+const expectedErrors = [
+  { type: "error", name: "InvalidPolicy", inputs: [] },
+  { type: "error", name: "ReentrantExecution", inputs: [] },
+  { type: "error", name: "UnauthorizedCaller", inputs: [] },
+  { type: "error", name: "InvalidEnvelope", inputs: [] },
+  { type: "error", name: "InvalidTarget", inputs: [] },
+  { type: "error", name: "PolicyTargetMismatch", inputs: [] },
+  {
+    type: "error",
+    name: "InvalidGasLimit",
+    inputs: [{ name: "supplied", type: "uint256" }],
+  },
+  {
+    type: "error",
+    name: "InvalidCallCount",
+    inputs: [{ name: "supplied", type: "uint256" }],
+  },
+  {
+    type: "error",
+    name: "NonCanonicalOffset",
+    inputs: [{ name: "index", type: "uint32" }],
+  },
+  {
+    type: "error",
+    name: "OversizedCall",
+    inputs: [
+      { name: "index", type: "uint32" },
+      { name: "supplied", type: "uint256" },
+    ],
+  },
+  {
+    type: "error",
+    name: "OversizedBatch",
+    inputs: [{ name: "supplied", type: "uint256" }],
+  },
+  { type: "error", name: "NonCanonicalEnd", inputs: [] },
+  {
+    type: "error",
+    name: "ShortCall",
+    inputs: [
+      { name: "index", type: "uint32" },
+      { name: "supplied", type: "uint256" },
+    ],
+  },
+  {
+    type: "error",
+    name: "DisallowedSelector",
+    inputs: [
+      { name: "index", type: "uint32" },
+      { name: "supplied", type: "uint32" },
+    ],
+  },
+  {
+    type: "error",
+    name: "NonZeroPadding",
+    inputs: [{ name: "index", type: "uint32" }],
+  },
+  {
+    type: "error",
+    name: "InsufficientForwardGas",
+    inputs: [{ name: "index", type: "uint32" }],
+  },
 ];
-if (JSON.stringify(names) !== JSON.stringify(expected)) {
-  throw new Error(`unexpected ForwardSummary components: ${names.join(",")}`);
-}
+const execute = {
+  type: "function",
+  name: "execute",
+  inputs: [
+    { name: "target", type: "address" },
+    { name: "gas_limit", type: "uint256" },
+    { name: "calls", type: "bytes[]" },
+  ],
+  outputs: [
+    {
+      name: "",
+      type: "tuple",
+      components: [
+        { name: "attempted", type: "uint64" },
+        { name: "succeeded", type: "uint64" },
+        { name: "failed", type: "uint64" },
+        { name: "success_bitmap", type: "uint256" },
+        { name: "last_returndata_len", type: "uint256" },
+        { name: "last_prefix_len", type: "uint64" },
+        { name: "last_prefix_word", type: "uint256" },
+        { name: "last_prefix_hash", type: "bytes32" },
+      ],
+    },
+  ],
+  stateMutability: "nonpayable",
+};
 
-fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-fs.writeFileSync(outputPath, `${JSON.stringify([...generated, ...fragment], null, 2)}\n`);
+assert.equal(
+  generated.filter((entry) => entry.type === "constructor").length,
+  1,
+  "generated ABI must contain exactly one constructor",
+);
+assert.deepStrictEqual(
+  generated.find((entry) => entry.type === "constructor"),
+  constructor,
+  "generated constructor schema drifted",
+);
+assert.ok(
+  generated.every((entry) => entry.type === "constructor" || entry.type === "error"),
+  "generated ABI contains an unexpected entry type",
+);
+const byName = (left, right) => left.name.localeCompare(right.name);
+assert.deepStrictEqual(
+  generated.filter((entry) => entry.type === "error").sort(byName),
+  expectedErrors.sort(byName),
+  "generated custom-error schema drifted",
+);
+assert.deepStrictEqual(
+  fragment,
+  [execute],
+  "raw execute fragment must match the complete expected ABI schema",
+);
+
+const repository = process.cwd();
+const buildRoot = path.resolve(repository, "build");
+const resolvedOutput = path.resolve(repository, outputPath);
+if (
+  resolvedOutput !== buildRoot &&
+  !resolvedOutput.startsWith(`${buildRoot}${path.sep}`)
+) {
+  throw new Error(`combined ABI output must stay under build/: ${resolvedOutput}`);
+}
+fs.mkdirSync(path.dirname(resolvedOutput), { recursive: true });
+fs.writeFileSync(
+  resolvedOutput,
+  `${JSON.stringify([...generated, ...fragment], null, 2)}\n`,
+);

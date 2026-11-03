@@ -2,28 +2,40 @@ SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 FE ?= build/tools/fe
-OUT_DIR ?= build
-TRACE_DIR ?= $(OUT_DIR)/traces
+override OUT_DIR := build
+override TRACE_DIR := build/traces
 NODE ?= node
 NPM ?= npm
 
-.PHONY: help fmt check build test traces abi abi-check metadata-repro demo-deps demo verify
+.PHONY: help toolchain fmt check build test traces abi abi-check metadata-repro demo-deps demo verify
 
 help:
 	@echo "Targets: fmt check build test traces abi-check metadata-repro demo verify"
-	@echo "Default Fe binary: $(FE) (downloaded and SHA-256 verified when absent)"
+	@echo "Fe binary: $(FE) (official SHA-256 and version are always verified)"
 
 $(FE):
 	./scripts/install-fe.sh "$@"
 
-fmt: $(FE)
+toolchain: $(FE)
+	./scripts/verify-fe.sh "$(FE)"
+
+fmt: toolchain
 	"$(FE)" fmt gate --check --color never
 
-check: $(FE)
+check: toolchain
 	"$(FE)" check gate --color never
 
-build: $(FE)
-	mkdir -p "$(OUT_DIR)"
+build: toolchain
+	./scripts/safe-output-dir.sh "$(OUT_DIR)" >/dev/null
+	rm -f -- \
+		"$(OUT_DIR)/CalldataFirewall.bin" \
+		"$(OUT_DIR)/CalldataFirewall.runtime.bin" \
+		"$(OUT_DIR)/CalldataFirewall.abi.json" \
+		"$(OUT_DIR)/CalldataFirewall.metadata.json" \
+		"$(OUT_DIR)/CalldataFirewall.combined.abi.json" \
+		"$(OUT_DIR)/Probe.bin" \
+		"$(OUT_DIR)/Probe.runtime.bin" \
+		"$(OUT_DIR)/Probe.abi.json"
 	"$(FE)" build gate --contract CalldataFirewall --profile release -O 2 \
 		--emit bytecode,runtime-bytecode,abi,metadata \
 		--out-dir "$(OUT_DIR)" --color never
@@ -31,11 +43,11 @@ build: $(FE)
 		--emit bytecode,runtime-bytecode,abi \
 		--out-dir "$(OUT_DIR)" --color never
 
-test: $(FE)
+test: toolchain
 	env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 \
 		"$(FE)" test gate --jobs 1 --grouped --color never
 
-traces: $(FE)
+traces: toolchain
 	FE="$(FE)" OUT_DIR="$(TRACE_DIR)" ./scripts/verify-traces.sh
 
 abi: build
@@ -49,7 +61,7 @@ abi-check: abi
 		interfaces/CalldataFirewall.abi.json
 
 metadata-repro: build
-	rm -rf -- "$(OUT_DIR)/reproduced"
+	./scripts/safe-output-dir.sh --reset "$(OUT_DIR)/reproduced" >/dev/null
 	"$(FE)" build \
 		--from-metadata "$(OUT_DIR)/CalldataFirewall.metadata.json" \
 		--emit bytecode,runtime-bytecode,abi \
@@ -62,6 +74,7 @@ metadata-repro: build
 		"$(OUT_DIR)/reproduced/CalldataFirewall.abi.json"
 
 demo-deps:
+	@test ! -L demo/node_modules || { echo "refusing symlinked demo/node_modules" >&2; exit 1; }
 	"$(NPM)" --prefix demo ci --ignore-scripts --no-audit --no-fund
 
 demo: abi-check demo-deps

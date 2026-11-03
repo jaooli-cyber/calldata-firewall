@@ -26,6 +26,11 @@ const firewallInterface = new Interface(
   readJson("CalldataFirewall.combined.abi.json"),
 );
 const probeInterface = new Interface(readJson("Probe.abi.json"));
+assert.equal(
+  firewallInterface.getFunction("execute").selector,
+  "0x7bd5292b",
+  "execute selector drifted",
+);
 const authorized = createAddressFromString(
   "0x1000000000000000000000000000000000000001",
 );
@@ -215,12 +220,56 @@ const [hits] = probeInterface.decodeFunctionResult(
   bytesToHex(hitsCall.result.execResult.returnValue),
 );
 assert.equal(hits, 2n, "rejected batches changed target state");
+const shanghaiCommon = new Common({
+  chain: Mainnet,
+  hardfork: Hardfork.Shanghai,
+});
+const shanghaiVm = await createVM({ common: shanghaiCommon });
+const deployOnShanghai = async (initcode) => {
+  const result = await shanghaiVm.evm.runCall({
+    caller: authorized,
+    origin: authorized,
+    data: hexToBytes(initcode),
+    gasLimit: 30_000_000n,
+    value: 0n,
+  });
+  assert.equal(result.execResult.exceptionError, undefined);
+  assert.ok(result.createdAddress);
+  return result.createdAddress;
+};
+const shanghaiProbe = await deployOnShanghai(readBytecode("Probe.bin"));
+const shanghaiArgs = AbiCoder.defaultAbiCoder().encode(
+  ["address", "address", "uint8", "uint32", "uint32", "uint32"],
+  [
+    authorized.toString(),
+    shanghaiProbe.toString(),
+    2,
+    hitSelector,
+    failSelector,
+    0,
+  ],
+);
+const shanghaiDeployment = await shanghaiVm.evm.runCall({
+  caller: authorized,
+  origin: authorized,
+  data: hexToBytes(
+    `${readBytecode("CalldataFirewall.bin")}${shanghaiArgs.slice(2)}`,
+  ),
+  gasLimit: 30_000_000n,
+  value: 0n,
+});
+assert.equal(
+  shanghaiDeployment.execResult.exceptionError?.error,
+  "invalid opcode",
+  "Shanghai unexpectedly deployed transient-storage bytecode",
+);
 
 console.log(
   JSON.stringify(
     {
       project: "FE-014 Calldata Firewall",
       fork: "Cancun",
+      preCancunNegative: "Shanghai deployment rejected: EIP-1153 unavailable",
       deployedViaInitcode: true,
       policy: {
         authorizedCaller: authorized.toString(),
