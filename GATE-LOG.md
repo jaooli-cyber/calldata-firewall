@@ -8,6 +8,7 @@ All times are UTC. This log records only work created in this isolated contest r
 - 2026-11-03T07:30:10Z - server clock independently confirmed the opening time. Repository inspection began only after this confirmation.
 - 2026-11-03T07:31Z-07:46Z - implementation, adversarial fixtures, source research, formatting, and semantic checks were performed. No build, test execution, deployment, or other heavy job was started.
 - 2026-11-03T07:46:36Z - source was format-clean and `fe check gate` was green; runtime evidence remained deliberately pending.
+- 2026-11-03T08:00Z-08:06Z - post-Red-Team hardening added expanded raw rejection traces, an official-pattern OOG burner stress, and observable input/output scratch reuse. Formatting and semantic checks were repeated; no build or runtime test was started.
 
 ## Toolchain
 
@@ -37,8 +38,11 @@ Implemented properties:
 - transient reentrancy guard;
 - code-bearing, nonzero, non-self target policy;
 - adjacent EIP-150 admission with a suffix reserve recurrence;
-- valid, malformed, bounds, accepted maximum boundaries, gas/value, reentrancy, returndata-bomb, and recurrence tests;
-- complete malformed, bounds, and value/gas tests with no post-rejection target query, suitable for zero-nested-CALL trace oracles.
+- source tests for valid/malformed/bounds/maximum cases, reentrancy, returndata bombs, recurrence, and observable scratch reuse;
+- a complete trace-only rejection matrix including short/wrong dispatch, zero/oversized policy fields, 2^64/U256_MAX metadata, tail gap/overlap, and invalid targets;
+- an eight-call OOG-burner stress derived from the pinned official Fe fixture.
+
+These source tests have passed semantic checking only. They remain runtime claims to be proved by the single authorized runner.
 
 ## Primary-source evidence
 
@@ -54,6 +58,7 @@ All sources are pinned to Fe commit `3dab95f8eebdccf9a2382bb59a33f7bbd03540ca`.
 - `ingots/core/src/ptr.fe:547-615,628-738` - touched allocation, logical length, capacity, and scratch reuse.
 - `ingots/std/src/abi/sol.fe:43-48` - selector is the high four bytes of Keccak.
 - `ingots/std/src/evm/effects.fe:41-131` - canonical address word rules.
+- `crates/fe/tests/fixtures/fe_test/minimum_gas_calls.fe:23-50,123-139` - tiny raw runtime deployment and the exact all-gas burner `0x5b600056`.
 
 ## Lightweight evidence completed
 
@@ -69,7 +74,7 @@ Selector derivation was independently confirmed twice with Fe const evaluation:
 - the exact signature evaluated to decimal `2077567275`, i.e. `0x7bd5292b`;
 - a typed temporary comparison produced a duplicate-selector diagnostic between `sol("execute(address,uint256,bytes[])")` and `0x7bd5292b`.
 
-Temporary selector probes were removed.
+Temporary selector probes were removed. The same `fmt --check` and low-priority `fe check gate` commands were repeated successfully after the 08:00Z hardening.
 
 ## Heavy evidence pending the runner
 
@@ -81,11 +86,12 @@ nice -n 15 timeout 20m ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grou
 nice -n 15 timeout 10m ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter zero_call_trace_oracle --call-trace --color never
 ```
 
-For the trace oracles, every failed firewall-call subtree must contain no nested CALL to the deployed Probe. The filtered malformed, bounds, and value/gas tests intentionally perform no post-rejection `Hits` query, so any target CALL is proof-killing.
+For the trace oracles, every failed firewall-call subtree must contain no nested CALL of any destination. The filtered raw-hardening, malformed, bounds, and value/gas tests intentionally perform no post-rejection external call, so any nested CALL is proof-killing.
 
 ## Current gate state
 
 - Semantic feasibility: PASS.
 - Runtime/build evidence: PENDING because RG-STOP is active.
 - Zero-call trace evidence: PENDING.
-- Red Team disposition: conditional PLAN B until both pending evidence classes pass; eligible for GO only after the criteria in `RED-TEAM.md` close.
+- OOG reserve stress and input/output scratch-reuse evidence: PENDING.
+- Red Team disposition: conditional PLAN B until every pending runtime/trace evidence class passes; eligible for GO only after the criteria in `RED-TEAM.md` close.

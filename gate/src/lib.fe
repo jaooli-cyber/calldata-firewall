@@ -11,12 +11,13 @@
 
 use core::abi::{ByteInput, ByteSource}
 use core::num::IntDowncast
-use core::ptr::MemBuffer
+use core::ptr::{self, MemBuffer}
 use std::abi::{ArrayView, Bytes, Bytes32, DynArray, dyn_array_from, sol}
 use std::evm::{
     Address,
     Call,
     CallData,
+    Create,
     Ctx,
     Evm,
     RawOps,
@@ -40,6 +41,7 @@ const BETWEEN_CALL_RESERVE: u256 = 100000
 const FINAL_RESERVE: u256 = 300000
 const CALL_OVERHEAD_ALLOWANCE: u256 = 40000
 const U256_MAX: u256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+const TWO_64: u256 = 0x10000000000000000
 
 #[abi]
 pub struct ForwardSummary {
@@ -379,9 +381,65 @@ contract BoundarySink {
     }
 }
 
+msg ScratchObserverMsg {
+    #[selector = sol("readScratch()")]
+    Read -> (u256, u256, u256, u256, u256, u256, u256),
+}
+
+contract ScratchObserver {
+    mut seen: u256,
+    mut len0: u256,
+    mut len1: u256,
+    mut len2: u256,
+    mut word0: u256,
+    mut word1: u256,
+    mut word2: u256,
+
+    init()
+    uses (mut seen, mut len0, mut len1, mut len2, mut word0, mut word1, mut word2)
+    {
+        seen = 0
+        len0 = 0
+        len1 = 0
+        len2 = 0
+        word0 = 0
+        word1 = 0
+        word2 = 0
+    }
+
+    recv {
+        ScratchObserverMsg::Read {} -> (u256, u256, u256, u256, u256, u256, u256)
+        uses (seen, len0, len1, len2, word0, word1, word2)
+        {
+            (seen, len0, len1, len2, word0, word1, word2)
+        }
+
+        _ uses (mut seen, mut len0, mut len1, mut len2, mut word0, mut word1, mut word2) {
+            let cd = CallData::new()
+            if seen == 0 {
+                len0 = cd.len()
+                word0 = cd.word_at(0)
+            } else {
+                if seen == 1 {
+                    len1 = cd.len()
+                    word1 = cd.word_at(0)
+                } else {
+                    len2 = cd.len()
+                    word2 = cd.word_at(0)
+                }
+            }
+            seen += 1
+        }
+    }
+}
+
 msg BombMsg {
     #[selector = sol("boom()")]
     Boom,
+    #[selector = sol("empty()")]
+    Empty,
+    #[selector = sol("failEmpty()")]
+    FailEmpty,
 }
 
 contract ReturnBomb {
@@ -391,6 +449,12 @@ contract ReturnBomb {
         Boom {} uses (raw: mut RawOps) {
             let data = MemBuffer::alloc(65536)
             raw.return_data(data: data.span())
+        }
+
+        Empty {} {}
+
+        FailEmpty {} uses (raw: mut RawOps) {
+            raw.revert(data: ptr::MemSpan::empty())
         }
     }
 }
@@ -422,6 +486,34 @@ contract ReenterTarget {
             !outcome.success() && is_error<ReentrantExecution>(outcome.returndata())
         }
     }
+}
+
+// Adapted from the pinned official minimum_gas_calls.fe fixture (lines 23-50).
+// It deploys a tiny runtime without compiler dispatch overhead.
+fn deploy_tiny_runtime(_ runtime: u256, _ length: u256, _ salt: u256) -> Address
+uses (create: mut Create)
+{
+    let code = ptr::alloc_bytes(64)
+    unsafe {
+        core::abi::store_word(
+            ptr: code,
+            value: (0x6000600c60003960006000f3 as u256) << 160 | length << 240 | length << 184,
+        )
+        core::abi::store_word(
+            ptr: ptr::offset_bytes(code, 12),
+            value: runtime << (256 - length * 8),
+        )
+    }
+    let target = unsafe {
+        create
+            .create2_raw(
+                value: Wei::zero(),
+                init_code: ptr::MemSpan::from_raw_parts(ptr: code, len: (12 + length) as usize),
+                salt,
+            )
+    }
+    assert!(target != Address::zero())
+    target
 }
 
 struct RawResult { success: bool, returndata_len: u256 }
@@ -620,6 +712,210 @@ fn bounds_zero_call_trace_oracle() uses (evm: mut Evm) {
 }
 
 #[test]
+fn raw_rejection_hardening_zero_call_trace_oracle() uses (evm: mut Evm) {
+    let firewall = deploy_firewall()
+    let probe = evm.create2<Probe>(value: Wei::zero(), args: (), salt: 9)
+
+    let canonical = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
+
+    // Fewer than four selector bytes fail closed in dispatch.
+    assert!(
+        !raw_firewall(
+            firewall,
+            canonical.slice(offset: 0, len: 3),
+            gas: 2000000,
+            value: Wei::zero(),
+        )
+            .success,
+    )
+
+    // Correct selector with an incomplete three-word envelope.
+    assert!(
+        !raw_firewall(
+            firewall,
+            canonical.slice(offset: 0, len: 68),
+            gas: 2000000,
+            value: Wei::zero(),
+        )
+            .success,
+    )
+
+    // Unknown selector never reaches the raw handler.
+    var wrong_selector = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
+    wrong_selector.write_word(offset: 0, value: 0xdeadbeef << 224)
+    assert!(
+        !raw_firewall(
+            firewall,
+            wrong_selector.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+
+    let no_calls: DynArray<Bytes> = dyn_array_from([])
+    let count_zero = firewall_data(probe, 100000, no_calls)
+    assert!(
+        !raw_firewall(
+            firewall,
+            count_zero.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+
+    let gas_zero = firewall_data(probe, 0, dyn_array_from([hit_payload()]))
+    assert!(
+        !raw_firewall(
+            firewall,
+            gas_zero.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+    let gas_high = firewall_data(
+        probe,
+        MAX_FORWARD_GAS + 1,
+        dyn_array_from([hit_payload()]),
+    )
+    assert!(
+        !raw_firewall(
+            firewall,
+            gas_high.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+
+    var count_max = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
+    count_max.write_word(offset: 100, value: U256_MAX)
+    assert!(
+        !raw_firewall(
+            firewall,
+            count_max.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+    var count_two64 = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
+    count_two64.write_word(offset: 100, value: TWO_64)
+    assert!(
+        !raw_firewall(
+            firewall,
+            count_two64.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+
+    var offset_max = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
+    offset_max.write_word(offset: 132, value: U256_MAX)
+    assert!(
+        !raw_firewall(
+            firewall,
+            offset_max.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+    var offset_two64 = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
+    offset_two64.write_word(offset: 132, value: TWO_64)
+    assert!(
+        !raw_firewall(
+            firewall,
+            offset_two64.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+
+    // With one element, its bytes length word is at absolute calldata byte 164.
+    var length_max = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
+    length_max.write_word(offset: 164, value: U256_MAX)
+    assert!(
+        !raw_firewall(
+            firewall,
+            length_max.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+    var length_two64 = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
+    length_two64.write_word(offset: 164, value: TWO_64)
+    assert!(
+        !raw_firewall(
+            firewall,
+            length_two64.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+
+    // With two four-byte payloads, the second canonical offset is 128.
+    var second_gap = firewall_data(
+        probe,
+        100000,
+        dyn_array_from([hit_payload(), hit_payload()]),
+    )
+    second_gap.write_word(offset: 164, value: 160)
+    assert!(
+        !raw_firewall(
+            firewall,
+            second_gap.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+    var second_overlap = firewall_data(
+        probe,
+        100000,
+        dyn_array_from([hit_payload(), hit_payload()]),
+    )
+    second_overlap.write_word(offset: 164, value: 64)
+    assert!(
+        !raw_firewall(
+            firewall,
+            second_overlap.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+
+    let target_zero = firewall_data(Address::zero(), 100000, dyn_array_from([hit_payload()]))
+    assert!(
+        !raw_firewall(
+            firewall,
+            target_zero.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+    let target_self = firewall_data(firewall, 100000, dyn_array_from([hit_payload()]))
+    assert!(
+        !raw_firewall(
+            firewall,
+            target_self.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+    let target_no_code = firewall_data(
+        Address::new(0xdead),
+        100000,
+        dyn_array_from([hit_payload()]),
+    )
+    assert!(
+        !raw_firewall(
+            firewall,
+            target_no_code.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        ).success,
+    )
+
+    // Trace oracle: no post-rejection external call is made; any nested CALL fails.
+}
+
+#[test]
 fn accepted_maximum_count_and_data_boundaries_complete() uses (evm: mut Evm) {
     let firewall = deploy_firewall()
     let sink = evm.create2<BoundarySink>(value: Wei::zero(), args: (), salt: 8)
@@ -687,6 +983,133 @@ fn value_and_gas_zero_call_trace_oracle() uses (evm: mut Evm) {
         !raw_firewall(firewall, data.span(), gas: 150000, value: Wei::zero()).success,
     )
     // Trace oracle: this test intentionally performs no post-rejection target call.
+}
+
+#[test]
+fn eight_exhausted_callees_preserve_suffix_reserves()
+uses (evm: mut Evm, create: mut Create)
+{
+    // Official fixture runtime: JUMPDEST; PUSH1 0; JUMP, ending only by OOG.
+    // The first adjacent admission needs 2,132,704 gas; 2.6M leaves a bounded
+    // margin for dispatch, full prevalidation, and touched scratch allocation.
+    let burner = deploy_tiny_runtime(0x5b600056, 4, 10)
+    let calls: DynArray<Bytes> = dyn_array_from(
+        [
+            Bytes::empty(),
+            Bytes::empty(),
+            Bytes::empty(),
+            Bytes::empty(),
+            Bytes::empty(),
+            Bytes::empty(),
+            Bytes::empty(),
+            Bytes::empty(),
+        ],
+    )
+
+    let summary: ForwardSummary = evm
+        .call(
+            addr: deploy_firewall(),
+            gas: 2600000,
+            value: Wei::zero(),
+            message: FirewallTypedMsg::Execute { target: burner, gas_limit: 100000, calls },
+        )
+    assert!(summary.attempted == 8)
+    assert!(summary.succeeded == 0)
+    assert!(summary.failed == 8)
+    assert!(summary.last_returndata_len == 0)
+    assert!(summary.last_prefix_len == 0)
+}
+
+#[test]
+fn input_scratch_reuse_1024_zero_one_is_observable() uses (evm: mut Evm) {
+    let firewall = deploy_firewall()
+    let observer = evm.create2<ScratchObserver>(value: Wei::zero(), args: (), salt: 11)
+    let marker = 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    var large = MemBuffer::alloc(MAX_CALL_DATA)
+    large.write_word(offset: 0, value: marker)
+    let calls: DynArray<Bytes> = dyn_array_from(
+        [
+            Bytes::from_payload(source: large.span()),
+            Bytes::empty(),
+            Bytes::from_word_prefix(word: 0xbb << 248, len: 1),
+        ],
+    )
+
+    let summary: ForwardSummary = evm
+        .call(
+            addr: firewall,
+            gas: 3000000,
+            value: Wei::zero(),
+            message: FirewallTypedMsg::Execute { target: observer, gas_limit: 200000, calls },
+        )
+    assert!(summary.attempted == 3)
+    assert!(summary.succeeded == 3)
+    assert!(summary.failed == 0)
+
+    let observed: (u256, u256, u256, u256, u256, u256, u256) = evm
+        .call(
+            addr: observer,
+            gas: 200000,
+            value: Wei::zero(),
+            message: ScratchObserverMsg::Read {},
+        )
+    assert!(observed.0 == 3)
+    assert!(observed.1 == 1024)
+    assert!(observed.2 == 0)
+    assert!(observed.3 == 1)
+    assert!(observed.4 == marker)
+    assert!(observed.5 == 0)
+    assert!(observed.6 == 0xbb << 248)
+}
+
+#[test]
+fn output_scratch_bomb_then_empty_or_failure_is_not_stale()
+uses (evm: mut Evm)
+{
+    let firewall = deploy_firewall()
+    let target = evm.create2<ReturnBomb>(value: Wei::zero(), args: (), salt: 12)
+    let boom = encode_msg_calldata(BombMsg::Boom {})
+    let empty = encode_msg_calldata(BombMsg::Empty {})
+    let calls: DynArray<Bytes> = dyn_array_from(
+        [Bytes::from_payload(source: boom.span()), Bytes::from_payload(source: empty.span())],
+    )
+
+    let after_empty: ForwardSummary = evm
+        .call(
+            addr: firewall,
+            gas: 4000000,
+            value: Wei::zero(),
+            message: FirewallTypedMsg::Execute { target, gas_limit: 1000000, calls },
+        )
+    assert!(after_empty.succeeded == 2)
+    assert!(after_empty.failed == 0)
+    assert!(after_empty.last_returndata_len == 0)
+    assert!(after_empty.last_prefix_len == 0)
+    assert!(after_empty.last_prefix_word == 0)
+    assert!(
+        after_empty.last_prefix_hash.val == keccak256(ptr::MemSpan::empty()),
+    )
+
+    let boom = encode_msg_calldata(BombMsg::Boom {})
+    let fail = encode_msg_calldata(BombMsg::FailEmpty {})
+    let calls: DynArray<Bytes> = dyn_array_from(
+        [Bytes::from_payload(source: boom.span()), Bytes::from_payload(source: fail.span())],
+    )
+    let after_failure: ForwardSummary = evm
+        .call(
+            addr: firewall,
+            gas: 4000000,
+            value: Wei::zero(),
+            message: FirewallTypedMsg::Execute { target, gas_limit: 1000000, calls },
+        )
+    assert!(after_failure.succeeded == 1)
+    assert!(after_failure.failed == 1)
+    assert!(after_failure.last_returndata_len == 0)
+    assert!(after_failure.last_prefix_len == 0)
+    assert!(after_failure.last_prefix_word == 0)
+    assert!(
+        after_failure.last_prefix_hash.val == keccak256(ptr::MemSpan::empty()),
+    )
 }
 
 #[test]

@@ -68,19 +68,20 @@ Each call receives the same requested gas and zero wei. Before each CALL, curren
 
 A backwards recurrence reserves enough gas for bounded between-call work, every remaining admission, and final static return encoding. The constants are deliberately conservative but still require runtime stress evidence before GO.
 
-## Adversarial matrix
+## Adversarial source matrix (runtime pending)
 
-The source includes tests for:
+The source contains semantically checked tests intended to cover the cases below. They are not runtime evidence until the single authorized runner executes them:
 
 - canonical success plus a reverting target while the batch continues;
-- alternate top-level and element offsets;
-- trailing bytes, dirty padding, missing padding, and dirty address bits;
-- fabricated count, per-item bound, and total bound;
-- nonpayable value rejection and insufficient forwarding gas;
-- reentrant callback rejection;
-- 65,536-byte returndata with a 64-byte copied prefix;
-- reserve monotonicity/saturation; and
-- accepted 8-call/4,096-byte-total and 1,024-byte-per-item boundaries; and
-- full malformed, bounds, and value/gas trace oracles with no post-rejection target query.
+- short envelope, wrong selector, zero count, invalid gas, and invalid targets;
+- count, element offset, and bytes length at both 2^64 and U256_MAX;
+- second-tail gap/overlap, alternate top-level offsets, suffixes, and padding;
+- full raw-rejection, bounds, and value/gas trace oracles with no post-rejection target query;
+- accepted 8-call/4,096-byte-total and 1,024-byte-per-item boundaries;
+- eight 100,000-gas calls to the official all-gas burner runtime under a 2,600,000 outer allowance;
+- input scratch reuse across lengths 1,024 -> 0 -> 1, observed by a target;
+- output scratch reuse across bomb -> empty and bomb -> empty-revert;
+- reentrant callback rejection and a 65,536-byte returndata bomb; and
+- reserve monotonicity and saturation.
 
 The single authorized runner should use the exact serial commands recorded in `GATE-LOG.md`; do not start a competing build/test process while RG-STOP is active.
