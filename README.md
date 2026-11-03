@@ -48,7 +48,7 @@ historical feasibility result, not evidence for the current interface.
 Commit `6d3b43ce8ed49f033b0f883a73a404bb8bf5c6bd` introduced the immutable
 caller/target/selector policy, exact policy errors, constructor rejection
 coverage, and per-index success bitmap. The complete submission candidate is
-identified by annotated tag `fe-014-submission-v1`. From that exact commit,
+identified by annotated tag `fe-014-submission-v2`. From that exact commit,
 `make verify` passes 14/14 tests, five zero-target-call rejection traces plus
 guarded reentrancy, byte-identical metadata reproduction, combined-ABI checks,
 and the Cancun/Shanghai demo. The authoritative full SHA, CI run, and evidence
@@ -210,4 +210,4 @@ requires Cancun or later; no pre-Cancun support is claimed.
 
 Historical gate verdict: **GO**. Submission-candidate verdict: **GO**, with no
 open S0/S1. The full SHA entered in the official form is authoritative;
-`fe-014-submission-v1` is its stable navigation label.
+`fe-014-submission-v2` is its stable navigation label.

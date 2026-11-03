@@ -136,4 +136,4 @@ Submission-candidate evidence closes the added technical gates:
 
 Red Team technical and submission-candidate verdict: **GO**, not PLAN B. No
 S0/S1 remains open. The authoritative SHA and release-evidence digest are
-recorded externally with `fe-014-submission-v1` and the official submission.
+recorded externally with `fe-014-submission-v2` and the official submission.
