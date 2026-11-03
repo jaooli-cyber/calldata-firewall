@@ -51,7 +51,7 @@ Commit `6d3b43ce8ed49f033b0f883a73a404bb8bf5c6bd` introduced:
 - constructor fail-closed checks and explicit constructor boundary tests; and
 - a per-index EVM-call success bitmap.
 
-The submission candidate referenced by `fe-014-submission-v2` passes
+The submission candidate referenced by `fe-014-submission-v3` passes
 `make verify`: 14/14 tests, five clean rejection traces plus guarded
 reentrancy, byte-identical metadata, combined-ABI validation, and
 actual-initcode Cancun deployment with eight-field decoding. The demo also
