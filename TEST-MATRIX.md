@@ -6,7 +6,7 @@ policy and bitmap hardening.
 
 The historical commit `3830b36` passed 12/12 tests, four rejection traces,
 one reentrancy trace, and its original ABI/fork smoke. The submission candidate
-referenced by `fe-014-submission-v1` passes all 14 tests, five zero-target-call
+referenced by `fe-014-submission-v2` passes all 14 tests, five zero-target-call
 rejection traces, the guarded reentrancy trace, byte-identical metadata
 regeneration, combined-ABI validation, and the Cancun/Shanghai demo through
 `make verify`.
@@ -17,7 +17,7 @@ regeneration, combined-ABI validation, and the Cancun/Shanghai demo through
 - **Trace oracle**: a property inspected in `--call-trace` output. A reverted
   state change alone cannot prove that no nested call was attempted.
 - **CANDIDATE EXECUTED-PASS**: `make verify` executed successfully on the exact
-  commit referenced by `fe-014-submission-v1`.
+  commit referenced by `fe-014-submission-v2`.
 - **External release record**: the full SHA and evidence-manifest digest are
   stored with the tag/release and official form to avoid self-reference.
 
@@ -250,7 +250,7 @@ including required trace inspection and byte-identical metadata regeneration.
 Historical baseline `3830b36` remains frozen at 12/12 tests, four clean
 rejection traces, one reentrancy trace, and its original ABI/fork smoke.
 
-The submission candidate referenced by `fe-014-submission-v1` has:
+The submission candidate referenced by `fe-014-submission-v2` has:
 
 - `make verify`: pass;
 - generated metadata regeneration: byte-identical;
