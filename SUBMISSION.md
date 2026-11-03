@@ -19,7 +19,7 @@ gas, and an exact per-call success bitmap.
 
 - Repository: `https://github.com/jaooli-cyber/calldata-firewall`
 - Project ID: `FE-014`
-- Navigation tag: `fe-014-submission-v2`
+- Navigation tag: `fe-014-submission-v3`
 - Authoritative identity: the full 40-character commit SHA entered in the
   official submission form. The tag must point to that same commit.
 

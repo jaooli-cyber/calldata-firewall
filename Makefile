@@ -87,6 +87,6 @@ verify: fmt check build test abi-check metadata-repro traces demo
 
 release-evidence:
 	@test -n "$(EVIDENCE_TAG)" || { \
-		echo "usage: make release-evidence EVIDENCE_TAG=fe-014-submission-v2" >&2; exit 1; }
+		echo "usage: make release-evidence EVIDENCE_TAG=fe-014-submission-v3" >&2; exit 1; }
 	EVIDENCE_PRE_TAG="$(EVIDENCE_PRE_TAG)" \
 		./scripts/release-evidence.sh "$(EVIDENCE_TAG)"
