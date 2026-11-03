@@ -73,13 +73,13 @@ A backwards recurrence reserves enough gas for bounded between-call work, every 
 The source contains semantically checked tests intended to cover the cases below. They are not runtime evidence until the single authorized runner executes them:
 
 - canonical success plus a reverting target while the batch continues;
-- short envelope, wrong selector, zero count, invalid gas, and invalid targets;
-- count, element offset, and bytes length at both 2^64 and U256_MAX;
+- short envelope, wrong selector with all lower 224 bits preserved and the Probe target asserted intact, zero count, invalid gas, and invalid targets;
+- U256_MAX metadata plus 2^64 aliases whose low bits remain canonical (`count=1`, first offset `32`, and bytes lengths `0/1`), so truncation would reach the target;
 - second-tail gap/overlap, alternate top-level offsets, suffixes, and padding;
 - full raw-rejection, bounds, and value/gas trace oracles with no post-rejection target query;
 - accepted 8-call/4,096-byte-total and 1,024-byte-per-item boundaries;
-- eight 100,000-gas calls to the official all-gas burner runtime under a 2,600,000 outer allowance;
-- input scratch reuse across lengths 1,024 -> 0 -> 1, observed by a target;
+- eight 512-byte, 100,000-gas calls to the official four-byte all-gas burner under a candidate 2,600,000 outer allowance; this is not calibrated until runtime;
+- input scratch reuse across lengths 1,024 -> 0 -> 1, with distinct first- and last-word markers observed by a target;
 - output scratch reuse across bomb -> empty and bomb -> empty-revert;
 - reentrant callback rejection and a 65,536-byte returndata bomb; and
 - reserve monotonicity and saturation.

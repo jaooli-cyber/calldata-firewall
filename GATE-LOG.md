@@ -9,6 +9,7 @@ All times are UTC. This log records only work created in this isolated contest r
 - 2026-11-03T07:31Z-07:46Z - implementation, adversarial fixtures, source research, formatting, and semantic checks were performed. No build, test execution, deployment, or other heavy job was started.
 - 2026-11-03T07:46:36Z - source was format-clean and `fe check gate` was green; runtime evidence remained deliberately pending.
 - 2026-11-03T08:00Z-08:06Z - post-Red-Team hardening added expanded raw rejection traces, an official-pattern OOG burner stress, and observable input/output scratch reuse. Formatting and semantic checks were repeated; no build or runtime test was started.
+- 2026-11-03T08:22Z-08:28Z - independent test-oracle review found four source-evidence weaknesses: selector mutation also changed target bytes, exact-2^64 cases could reject after low-bit truncation, the burner used empty calldata, and only the first 1,024-byte input word was observed. Source cases were corrected to preserve the target and canonical low bits, stress 8 x 512 bytes with a four-byte code assertion, and observe offsets 0 and 992. Formatting and semantic checking passed; no build or runtime test was started. The 2.6M outer allowance remains an uncalibrated runtime hypothesis.
 
 ## Toolchain
 
@@ -39,8 +40,8 @@ Implemented properties:
 - code-bearing, nonzero, non-self target policy;
 - adjacent EIP-150 admission with a suffix reserve recurrence;
 - source tests for valid/malformed/bounds/maximum cases, reentrancy, returndata bombs, recurrence, and observable scratch reuse;
-- a complete trace-only rejection matrix including short/wrong dispatch, zero/oversized policy fields, 2^64/U256_MAX metadata, tail gap/overlap, and invalid targets;
-- an eight-call OOG-burner stress derived from the pinned official Fe fixture.
+- a complete trace-only rejection matrix including target-preserving wrong dispatch, zero/oversized policy fields, canonical-low-bit 2^64 aliases, U256_MAX metadata, tail gap/overlap, and invalid targets;
+- an eight-call, 4,096-byte-total OOG-burner stress derived from the pinned official Fe fixture, with the deployed four-byte runtime asserted before forwarding.
 
 These source tests have passed semantic checking only. They remain runtime claims to be proved by the single authorized runner.
 
@@ -74,17 +75,11 @@ Selector derivation was independently confirmed twice with Fe const evaluation:
 - the exact signature evaluated to decimal `2077567275`, i.e. `0x7bd5292b`;
 - a typed temporary comparison produced a duplicate-selector diagnostic between `sol("execute(address,uint256,bytes[])")` and `0x7bd5292b`.
 
-Temporary selector probes were removed. The same `fmt --check` and low-priority `fe check gate` commands were repeated successfully after the 08:00Z hardening.
+Temporary selector probes were removed. The same `fmt --check` and low-priority `fe check gate` commands were repeated successfully after the 08:00Z hardening and after the later selector/alias, maximum-workload burner, and first/last-marker corrections. These are still semantic checks, not runtime evidence.
 
 ## Heavy evidence pending the runner
 
-Do not mark the gate GO until the coordinator's resource guard is clear and the single authorized runner completes, serially and at low priority:
-
-```text
-nice -n 15 timeout 15m ./.contest-tools/fe_linux_amd64 build gate
-nice -n 15 timeout 20m ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --color never
-nice -n 15 timeout 10m ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter zero_call_trace_oracle --call-trace --color never
-```
+Do not mark the gate GO until the coordinator's resource guard is clear and the single authorized runner completes the authoritative serial, low-priority sequence in `GATE-RUNBOOK.md`. That runbook fixes the guard thresholds, CPU/thread limits, margin-aware timeouts, full grouped suite, and one separately retained call trace for each oracle.
 
 For the trace oracles, every failed firewall-call subtree must contain no nested CALL of any destination. The filtered raw-hardening, malformed, bounds, and value/gas tests intentionally perform no post-rejection external call, so any nested CALL is proof-killing.
 

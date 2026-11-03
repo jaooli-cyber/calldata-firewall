@@ -1,15 +1,15 @@
 # Calldata Firewall test matrix
 
-This inventory is pinned to source commit `33a9a70` and covers every `#[test]`
-function present in `gate/src/lib.fe` at that commit. It is an evidence plan,
-not runtime evidence and not a GO decision.
+This inventory covers every `#[test]` function in the source snapshot changed
+alongside this matrix. It is an evidence plan, not runtime evidence and not a
+GO decision; the final commit and file digest identify the snapshot externally.
 
 ## Evidence vocabulary
 
 - **AUTHORED**: the case and its assertions exist in the pinned source.
 - **STATIC-CHECKED**: `GATE-LOG.md` records a successful Fe 26.5.0 semantic
-  check after the hardening that introduced these cases. This matrix did not
-  rerun that command.
+  check after the hardening that introduced these cases. This is a source-only
+  check and does not execute any test.
 - **NOT EXECUTED**: no build, runtime test, deployment, or call trace has been
   run for this source snapshot.
 - **Internal oracle**: an assertion inside the Fe test. It becomes evidence
@@ -26,7 +26,7 @@ Every test below has the same current evidence state:
 
 ### T01 - `canonical_batch_forwards_and_classifies`
 
-Source: `gate/src/lib.fe:570-591`
+Source: `gate/src/lib.fe:583-603`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|
@@ -36,7 +36,7 @@ Status: **AUTHORED / STATIC-CHECKED / NOT EXECUTED**.
 
 ### T02 - `malformed_canonicality_matrix_zero_call_trace_oracle`
 
-Source: `gate/src/lib.fe:593-659`
+Source: `gate/src/lib.fe:606-671`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|
@@ -52,7 +52,7 @@ Status: **AUTHORED / STATIC-CHECKED / NOT EXECUTED**.
 
 ### T03 - `bounds_zero_call_trace_oracle`
 
-Source: `gate/src/lib.fe:661-712`
+Source: `gate/src/lib.fe:674-724`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|
@@ -64,22 +64,23 @@ Status: **AUTHORED / STATIC-CHECKED / NOT EXECUTED**.
 
 ### T04 - `raw_rejection_hardening_zero_call_trace_oracle`
 
-Source: `gate/src/lib.fe:714-916`
+Source: `gate/src/lib.fe:727-955`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|
 | Three-byte selector prefix | Dispatch fails closed | Required: failed firewall-call subtree contains no nested `CALL` |
 | Correct selector with only 68 total bytes | Incomplete envelope is rejected | Required: no nested `CALL` |
-| Unknown selector `0xdeadbeef` | Dispatch rejects before raw handler | Required: no nested `CALL` |
+| Unknown selector `0xdeadbeef`, changing only the high four bytes; `read_word(4)` still equals the Probe address word | Dispatch rejects before raw handler while the valid target remains reachable if dispatch were wrong | Required: no nested `CALL` |
 | Canonical count `0` | Policy rejects empty batch | Required: no nested `CALL` |
 | `gas_limit=0` | Policy rejects gas limit | Required: no nested `CALL` |
 | `gas_limit=MAX_FORWARD_GAS+1` | Policy rejects gas limit | Required: no nested `CALL` |
 | Count `U256_MAX` | Structural/policy rejection | Required: no nested `CALL` |
-| Count `2^64` | Structural/policy rejection | Required: no nested `CALL` |
+| Count `2^64+1` on the canonical one-element shape | High-bit alias is rejected; truncating to low count `1` would reach Probe | Required: no nested `CALL` |
 | First element offset `U256_MAX` | Offset rejected without wraparound forwarding | Required: no nested `CALL` |
-| First element offset `2^64` | Offset rejected | Required: no nested `CALL` |
+| First element offset `2^64+32` on the canonical one-element shape | High-bit alias is rejected; truncating to low offset `32` would reach Probe | Required: no nested `CALL` |
 | First element length `U256_MAX` | Length rejected without allocation or forwarding | Required: no nested `CALL` |
-| First element length `2^64` | Length rejected | Required: no nested `CALL` |
+| First element length `2^64` on a canonical empty-bytes shape | High-bit alias is rejected; truncating to low length `0` would reach Probe | Required: no nested `CALL` |
+| First element length `2^64+1` on a canonical one-byte shape | High-bit alias is rejected; truncating to low length `1` would reach Probe | Required: no nested `CALL` |
 | Second tail offset `160` instead of canonical `128` | Gap rejected | Required: no nested `CALL` |
 | Second tail offset `64` instead of canonical `128` | Overlap/backward tail rejected | Required: no nested `CALL` |
 | Zero target | Target rejected | Required: no nested `CALL` |
@@ -90,7 +91,7 @@ Status: **AUTHORED / STATIC-CHECKED / NOT EXECUTED**.
 
 ### T05 - `accepted_maximum_count_and_data_boundaries_complete`
 
-Source: `gate/src/lib.fe:918-963`
+Source: `gate/src/lib.fe:958-1002`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|
@@ -101,7 +102,7 @@ Status: **AUTHORED / STATIC-CHECKED / NOT EXECUTED**.
 
 ### T06 - `value_and_gas_zero_call_trace_oracle`
 
-Source: `gate/src/lib.fe:965-986`
+Source: `gate/src/lib.fe:1005-1026`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|
@@ -112,27 +113,27 @@ Status: **AUTHORED / STATIC-CHECKED / NOT EXECUTED**.
 
 ### T07 - `eight_exhausted_callees_preserve_suffix_reserves`
 
-Source: `gate/src/lib.fe:988-1021`
+Source: `gate/src/lib.fe:1028-1062`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|
-| Eight empty payloads sent with `100,000` gas each to the official `0x5b600056` all-gas burner under a `2,600,000` outer allowance | All eight calls are attempted; `succeeded=0`, `failed=8`; last full returndata and prefix lengths are zero; no later-index admission revert | Optional diagnostic trace may confirm eight target calls; the required GO evidence is successful runtime completion and summary assertions |
+| Assert deployed burner `extcodesize=4`, then send eight 512-byte payloads (`4,096` total) with `100,000` gas each to official runtime `0x5b600056` under candidate outer allowance `2,600,000` | All eight calls are attempted; `succeeded=0`, `failed=8`; last full returndata and prefix lengths are zero; no later-index admission revert | Optional diagnostic trace may confirm eight target calls; runtime must calibrate the candidate outer allowance before any exact-margin claim |
 
 Status: **AUTHORED / STATIC-CHECKED / NOT EXECUTED**.
 
 ### T08 - `input_scratch_reuse_1024_zero_one_is_observable`
 
-Source: `gate/src/lib.fe:1023-1063`
+Source: `gate/src/lib.fe:1065-1108`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|
-| Reuse one input scratch buffer for payload lengths `1,024 -> 0 -> 1` | Three successful calls; observer sees exact lengths `1024,0,1`; first marker survives; empty payload reads zero; one-byte payload is exactly `0xbb` followed by zeros, proving no stale logical extent | None required; target-observed runtime assertions |
+| Reuse one input scratch buffer for payload lengths `1,024 -> 0 -> 1`; place distinct markers at offsets `0` and `992` of the first payload | Three successful calls; observer sees exact lengths `1024,0,1`, both boundary markers, zero for the empty payload, and exactly `0xbb` followed by zeros for the one-byte payload | None required; target-observed runtime assertions prove the copy reaches its final word plus non-stale logical extent |
 
 Status: **AUTHORED / STATIC-CHECKED / NOT EXECUTED**.
 
 ### T09 - `output_scratch_bomb_then_empty_or_failure_is_not_stale`
 
-Source: `gate/src/lib.fe:1065-1113`
+Source: `gate/src/lib.fe:1110-1157`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|
@@ -143,7 +144,7 @@ Status: **AUTHORED / STATIC-CHECKED / NOT EXECUTED**.
 
 ### T10 - `reentrancy_is_rejected_before_nested_validation`
 
-Source: `gate/src/lib.fe:1115-1132`
+Source: `gate/src/lib.fe:1160-1176`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|
@@ -153,7 +154,7 @@ Status: **AUTHORED / STATIC-CHECKED / NOT EXECUTED**.
 
 ### T11 - `returndata_copy_is_capped_but_full_length_is_reported`
 
-Source: `gate/src/lib.fe:1134-1151`
+Source: `gate/src/lib.fe:1179-1195`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|
@@ -163,7 +164,7 @@ Status: **AUTHORED / STATIC-CHECKED / NOT EXECUTED**.
 
 ### T12 - `reserve_recurrence_is_monotone_and_saturating`
 
-Source: `gate/src/lib.fe:1153-1162`
+Source: `gate/src/lib.fe:1198-1206`
 
 | Case | Expected internal oracle | Trace oracle |
 |---|---|---|

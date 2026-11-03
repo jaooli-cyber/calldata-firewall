@@ -14,8 +14,8 @@ The two protected invariants are:
 | ID | Severity | Status | Finding and disposition |
 |---|---:|---|---|
 | RT-01 | S0 | Open | No build or runtime tests have run while RG-STOP is active. A semantic check alone cannot support GO. |
-| RT-02 | S1 | Open | The zero-call property needs an opcode/call trace. State counters are rollback-blind. No-query source tests now include short/wrong dispatch, zero/oversized policy fields, 2^64/U256_MAX metadata, tail gap/overlap, malformed padding/suffixes, bounds, value/gas, and invalid targets; every trace is pending. |
-| RT-03 | S1 | Open | `BETWEEN_CALL_RESERVE=100000` and `FINAL_RESERVE=300000` are unmeasured. Source tests now include accepted maximum data and eight 100,000-gas calls to the official OOG burner with a 2,600,000 outer allowance. Runtime execution is pending; any late admission failure is proof-killing. |
+| RT-02 | S1 | Open | The zero-call property needs an opcode/call trace. State counters are rollback-blind. The wrong-selector case mutates only the high four bytes and asserts the Probe target is intact. Count, element-offset, and length high-bit aliases retain canonical low values, so truncation would reach Probe; U256_MAX cases remain. All no-query traces are pending. |
+| RT-03 | S1 | Open | `BETWEEN_CALL_RESERVE=100000` and `FINAL_RESERVE=300000` are unmeasured. The source test asserts the official burner's deployed code size is four, then sends eight 512-byte calls (4,096 total), each with 100,000 gas. The 2,600,000 outer allowance is a hypothesis, not an exact calibration, until runtime; any late admission failure is proof-killing. |
 | RT-04 | S1 | Open | The transient `TSlot<bool>` guard must be exercised on the selected EVM backend. A compile-only pass does not prove backend/runtime EIP-1153 behavior. |
 | RT-05 | S1 | Mitigated | Ordinary Solidity-compatible decoding accepts alternate offsets, trailing bytes, missing padding, and dirty padding. The gate adds exact offset, exact-end, and every-padding-byte checks before forwarding. |
 | RT-06 | S1 | Open | Static code caps `raw_call` output at a touched 64-byte buffer and preserves full length. Source tests now cover bomb -> empty and bomb -> empty-revert, including zero length/word/empty hash; runtime execution is pending. |
@@ -23,7 +23,7 @@ The two protected invariants are:
 | RT-08 | S2 | Accepted scope | Only the last call's prefix metadata is returned. Per-call results are reduced to aggregate success/failure counts; this is a gate simplification, not a general batch receipt format. |
 | RT-09 | S2 | Accepted scope | The policy rejects precompiles, targets with no current code, the firewall itself, empty batches, value, and heterogeneous targets/gas. This is intentional specialization and must not be advertised as a generic firewall. |
 | RT-10 | S2 | Mitigated | The raw selector is a literal because textual selectors enforce variant arity. The exact typed message remains in source, and Fe independently confirmed `0x7bd5292b`. |
-| RT-11 | S1 | Open | Source instrumentation observes input scratch lengths and words across 1,024 -> 0 -> 1. It has only passed semantic checking; runtime evidence that no length/content is stale is pending. |
+| RT-11 | S1 | Open | Source instrumentation observes input scratch lengths across 1,024 -> 0 -> 1, distinct first and last words at offsets 0 and 992 for the full payload, and the one-byte prefix after reuse. It has only passed semantic checking; runtime evidence that copying reaches the final word and no length/content is stale is pending. |
 
 ## Algorithmic review
 
@@ -72,8 +72,8 @@ GO requires all of the following:
 3. raw-hardening, malformed, bounds, and value/gas traces with zero nested CALLs of any destination;
 4. returndata-bomb case reports 65,536 full bytes while copying exactly 64;
 5. reentrancy fixture returns the guarded inner failure and outer success;
-6. maximum-count/data and eight-OOG-call stress produce no later-index admission failure;
-7. input reuse reports exactly 1,024 -> 0 -> 1 with the expected words;
+6. maximum-count/data and eight-OOG-call stress (8 x 512 bytes, four-byte burner code) produce no later-index admission failure;
+7. input reuse reports exactly 1,024 -> 0 -> 1 with the expected first word, final word at offset 992, and one-byte prefix;
 8. bomb -> empty/failure reports an empty, non-stale final prefix; and
 9. no new S0/S1 finding.
 

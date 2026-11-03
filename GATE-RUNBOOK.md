@@ -102,7 +102,7 @@ mkdir -p evidence
   printf 'fe='; ./.contest-tools/fe_linux_amd64 --version
   printf 'cpuset=%s\n' "$CPUSET"
 } 2>&1 | tee evidence/00-provenance.log
-sha256sum .contest-tools/fe_linux_amd64 GATE-RUNBOOK.md README.md GATE-LOG.md RED-TEAM.md TOOLCHAIN.md gate/fe.toml gate/src/lib.fe > evidence/00-inputs.sha256
+sha256sum .contest-tools/fe_linux_amd64 GATE-RUNBOOK.md README.md GATE-LOG.md RED-TEAM.md TEST-MATRIX.md TOOLCHAIN.md gate/fe.toml gate/src/lib.fe > evidence/00-inputs.sha256
 ```
 
 `00-inputs.sha256` does not name itself. Do not alter tracked inputs after this point. Every command log must contain its exit code. In an interactive Bash session, capture each piped command as follows, substituting its concrete command, log, and timeout:
@@ -142,7 +142,7 @@ After another complete guard pass:
 env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 1500s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --color never 2>&1 | tee evidence/02-tests-full.log
 ```
 
-Record `${PIPESTATUS[0]}` immediately. This invocation must discover and pass the entire suite, including canonical forwarding, all canonicality and bounds rejections, accepted maximums, the eight-call exhausted burner, input and output scratch reuse, reentrancy, capped returndata, and reserve recurrence. A filtered success never substitutes for the full suite.
+Record `${PIPESTATUS[0]}` immediately. This invocation must discover and pass the entire suite, including canonical forwarding, all canonicality and bounds rejections, accepted maximums, the four-byte burner with eight 512-byte inputs, first/last-word input observation, output scratch reuse, reentrancy, capped returndata, and reserve recurrence. A filtered success never substitutes for the full suite.
 
 ### 4.3 Individual call traces
 
@@ -198,7 +198,7 @@ Assign exactly one gate result from retained evidence:
 
 ### `GO`
 
-Use only if the build, complete grouped suite, and all five individual traces exit zero within the window; every rejection subtree has zero nested calls; the eight-call burner reports `attempted=8, failed=8`; 1024-to-0-to-1 input reuse and bomb-to-empty/failure output reuse are clean; bounded returndata, reentrancy, maximum boundaries, and reserve recurrence pass; no S0/S1 remains; and final integrity checks are clean.
+Use only if the build, complete grouped suite, and all five individual traces exit zero within the window; every rejection subtree has zero nested calls; the four-byte burner with eight 512-byte inputs reports `attempted=8, failed=8`; 1024-to-0-to-1 input reuse exposes both boundary markers and bomb-to-empty/failure output reuse is clean; bounded returndata, reentrancy, maximum boundaries, and reserve recurrence pass; no S0/S1 remains; and final integrity checks are clean.
 
 ### `PLAN B (single-call)`
 

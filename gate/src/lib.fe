@@ -383,7 +383,7 @@ contract BoundarySink {
 
 msg ScratchObserverMsg {
     #[selector = sol("readScratch()")]
-    Read -> (u256, u256, u256, u256, u256, u256, u256),
+    Read -> (u256, u256, u256, u256, u256, u256, u256, u256),
 }
 
 contract ScratchObserver {
@@ -394,9 +394,10 @@ contract ScratchObserver {
     mut word0: u256,
     mut word1: u256,
     mut word2: u256,
+    mut last_word0: u256,
 
     init()
-    uses (mut seen, mut len0, mut len1, mut len2, mut word0, mut word1, mut word2)
+    uses (mut seen, mut len0, mut len1, mut len2, mut word0, mut word1, mut word2, mut last_word0)
     {
         seen = 0
         len0 = 0
@@ -405,20 +406,31 @@ contract ScratchObserver {
         word0 = 0
         word1 = 0
         word2 = 0
+        last_word0 = 0
     }
 
     recv {
-        ScratchObserverMsg::Read {} -> (u256, u256, u256, u256, u256, u256, u256)
-        uses (seen, len0, len1, len2, word0, word1, word2)
+        ScratchObserverMsg::Read {} -> (u256, u256, u256, u256, u256, u256, u256, u256)
+        uses (seen, len0, len1, len2, word0, word1, word2, last_word0)
         {
-            (seen, len0, len1, len2, word0, word1, word2)
+            (seen, len0, len1, len2, word0, word1, word2, last_word0)
         }
 
-        _ uses (mut seen, mut len0, mut len1, mut len2, mut word0, mut word1, mut word2) {
+        _ uses (
+            mut seen,
+            mut len0,
+            mut len1,
+            mut len2,
+            mut word0,
+            mut word1,
+            mut word2,
+            mut last_word0,
+        ) {
             let cd = CallData::new()
             if seen == 0 {
                 len0 = cd.len()
                 word0 = cd.word_at(0)
+                last_word0 = cd.word_at(992)
             } else {
                 if seen == 1 {
                     len1 = cd.len()
@@ -740,9 +752,15 @@ fn raw_rejection_hardening_zero_call_trace_oracle() uses (evm: mut Evm) {
             .success,
     )
 
-    // Unknown selector never reaches the raw handler.
+    // Change only the selector bytes: the encoded Probe target must stay intact.
     var wrong_selector = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
-    wrong_selector.write_word(offset: 0, value: 0xdeadbeef << 224)
+    let original_word0 = wrong_selector.read_word(0)
+    wrong_selector
+        .write_word(
+            offset: 0,
+            value: (0xdeadbeef << 224) | (original_word0 & (U256_MAX >> 32)),
+        )
+    assert!(wrong_selector.read_word(4) == probe.word())
     assert!(
         !raw_firewall(
             firewall,
@@ -796,12 +814,13 @@ fn raw_rejection_hardening_zero_call_trace_oracle() uses (evm: mut Evm) {
             value: Wei::zero(),
         ).success,
     )
-    var count_two64 = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
-    count_two64.write_word(offset: 100, value: TWO_64)
+    // Preserve canonical low count one: truncating the high bit would call Probe.
+    var count_two64_alias = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
+    count_two64_alias.write_word(offset: 100, value: TWO_64 + 1)
     assert!(
         !raw_firewall(
             firewall,
-            count_two64.span(),
+            count_two64_alias.span(),
             gas: 2000000,
             value: Wei::zero(),
         ).success,
@@ -817,15 +836,17 @@ fn raw_rejection_hardening_zero_call_trace_oracle() uses (evm: mut Evm) {
             value: Wei::zero(),
         ).success,
     )
-    var offset_two64 = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
-    offset_two64.write_word(offset: 132, value: TWO_64)
+    // Preserve canonical low offset 32 to catch any high-bit truncation.
+    var offset_two64_alias = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
+    offset_two64_alias.write_word(offset: 132, value: TWO_64 + 32)
     assert!(
         !raw_firewall(
             firewall,
-            offset_two64.span(),
+            offset_two64_alias.span(),
             gas: 2000000,
             value: Wei::zero(),
-        ).success,
+        )
+            .success,
     )
 
     // With one element, its bytes length word is at absolute calldata byte 164.
@@ -839,15 +860,33 @@ fn raw_rejection_hardening_zero_call_trace_oracle() uses (evm: mut Evm) {
             value: Wei::zero(),
         ).success,
     )
-    var length_two64 = firewall_data(probe, 100000, dyn_array_from([hit_payload()]))
-    length_two64.write_word(offset: 164, value: TWO_64)
+    // Empty bytes is canonical for low length zero; truncation would reach Probe.
+    var length_two64_alias = firewall_data(probe, 100000, dyn_array_from([Bytes::empty()]))
+    length_two64_alias.write_word(offset: 164, value: TWO_64)
     assert!(
         !raw_firewall(
             firewall,
-            length_two64.span(),
+            length_two64_alias.span(),
             gas: 2000000,
             value: Wei::zero(),
-        ).success,
+        )
+            .success,
+    )
+    // Also preserve low length one in a canonical one-byte shape.
+    var length_two64_plus_one = firewall_data(
+        probe,
+        100000,
+        dyn_array_from([Bytes::from_word_prefix(word: 0x01 << 248, len: 1)]),
+    )
+    length_two64_plus_one.write_word(offset: 164, value: TWO_64 + 1)
+    assert!(
+        !raw_firewall(
+            firewall,
+            length_two64_plus_one.span(),
+            gas: 2000000,
+            value: Wei::zero(),
+        )
+            .success,
     )
 
     // With two four-byte payloads, the second canonical offset is 128.
@@ -987,22 +1026,24 @@ fn value_and_gas_zero_call_trace_oracle() uses (evm: mut Evm) {
 
 #[test]
 fn eight_exhausted_callees_preserve_suffix_reserves()
-uses (evm: mut Evm, create: mut Create)
+uses (evm: mut Evm, create: mut Create, ctx: Ctx)
 {
     // Official fixture runtime: JUMPDEST; PUSH1 0; JUMP, ending only by OOG.
-    // The first adjacent admission needs 2,132,704 gas; 2.6M leaves a bounded
-    // margin for dispatch, full prevalidation, and touched scratch allocation.
+    // The pure recurrence's first admission floor is 2,132,704 gas. The 2.6M
+    // outer allowance is a source-test hypothesis, not a runtime calibration.
     let burner = deploy_tiny_runtime(0x5b600056, 4, 10)
+    assert!(ctx.extcodesize(burner) == 4)
+    let half = MemBuffer::alloc(512)
     let calls: DynArray<Bytes> = dyn_array_from(
         [
-            Bytes::empty(),
-            Bytes::empty(),
-            Bytes::empty(),
-            Bytes::empty(),
-            Bytes::empty(),
-            Bytes::empty(),
-            Bytes::empty(),
-            Bytes::empty(),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
+            Bytes::from_payload(source: half.span()),
         ],
     )
 
@@ -1024,9 +1065,11 @@ uses (evm: mut Evm, create: mut Create)
 fn input_scratch_reuse_1024_zero_one_is_observable() uses (evm: mut Evm) {
     let firewall = deploy_firewall()
     let observer = evm.create2<ScratchObserver>(value: Wei::zero(), args: (), salt: 11)
-    let marker = 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    let first_marker = 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    let last_marker = 0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
     var large = MemBuffer::alloc(MAX_CALL_DATA)
-    large.write_word(offset: 0, value: marker)
+    large.write_word(offset: 0, value: first_marker)
+    large.write_word(offset: 992, value: last_marker)
     let calls: DynArray<Bytes> = dyn_array_from(
         [
             Bytes::from_payload(source: large.span()),
@@ -1046,7 +1089,7 @@ fn input_scratch_reuse_1024_zero_one_is_observable() uses (evm: mut Evm) {
     assert!(summary.succeeded == 3)
     assert!(summary.failed == 0)
 
-    let observed: (u256, u256, u256, u256, u256, u256, u256) = evm
+    let observed: (u256, u256, u256, u256, u256, u256, u256, u256) = evm
         .call(
             addr: observer,
             gas: 200000,
@@ -1057,9 +1100,10 @@ fn input_scratch_reuse_1024_zero_one_is_observable() uses (evm: mut Evm) {
     assert!(observed.1 == 1024)
     assert!(observed.2 == 0)
     assert!(observed.3 == 1)
-    assert!(observed.4 == marker)
+    assert!(observed.4 == first_marker)
     assert!(observed.5 == 0)
     assert!(observed.6 == 0xbb << 248)
+    assert!(observed.7 == last_marker)
 }
 
 #[test]
