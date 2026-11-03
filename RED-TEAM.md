@@ -85,7 +85,7 @@ KILL if malformed input reaches a target, memory/returndata copying is unbounded
 
 - **S0:** none open.
 - All 12 runtime tests and all five retained traces pass on the evaluated
-  baseline `25722e4`.
+  baseline `3830b36`.
 - Rejection traces contain no target call; malformed canonical encodings do
   not cross the forwarding boundary.
 - Eight exhausted callees, maximum count/data, scratch reuse, returndata bomb,

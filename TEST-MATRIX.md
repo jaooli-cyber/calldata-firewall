@@ -224,7 +224,7 @@ evaluated baseline supersedes those statuses:
 - Shanghai negative-fork smoke: expected invalid opcode, proving the EIP-1153
   deployment boundary.
 - Evaluated commit:
-  `25722e4c53a3bc160b2bc94e5ad1045a1b2b88d6`.
+  `3830b36a0df35bc3a0fb567e8a2d408261c217e0`.
 - Evidence: `evidence/final-20261103T092200Z`; manifest SHA-256
   `249ec8c5beb8090d39ef1a7bce970a94b10cb1096a8fb0fec642f0a6d88e13dd`.
 

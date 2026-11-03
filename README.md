@@ -14,7 +14,8 @@ Contest work in this repository began after 2026-11-03T00:00:00Z. The implementa
 - Ethers 6.17 / EthereumJS VM Cancun ABI smoke: PASS.
 - Current Red Team disposition: technical GO.
 
-See `GATE-LOG.md` for evidence and `RED-TEAM.md` for open gates.
+See `GATE-LOG.md` for evidence, `RED-TEAM.md` for open gates, and
+`PROVENANCE.md` for the contest boundary and private history normalization.
 
 ## Endpoint
 
@@ -105,8 +106,8 @@ Shanghai, making the fork requirement explicit.
 
 ## Final gate evidence
 
-- Evaluated commit: `25722e4c53a3bc160b2bc94e5ad1045a1b2b88d6`.
-- Evaluated tree: `2f10a33c5a47381ce89f2f9bb8d9100ec8b7e38d`.
+- Evaluated commit: `3830b36a0df35bc3a0fb567e8a2d408261c217e0`.
+- Evaluated tree: `c56e477e704dfbf500038848339a84214a56574f`.
 - Evidence: `evidence/final-20261103T092200Z` (ignored from Git).
 - Evidence-manifest SHA-256:
   `249ec8c5beb8090d39ef1a7bce970a94b10cb1096a8fb0fec642f0a6d88e13dd`.

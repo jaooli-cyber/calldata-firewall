@@ -5,8 +5,8 @@
 **GO** on the complete technical gate.
 
 The evaluated baseline is commit
-`25722e4c53a3bc160b2bc94e5ad1045a1b2b88d6`, tree
-`2f10a33c5a47381ce89f2f9bb8d9100ec8b7e38d`, with a clean worktree and
+`3830b36a0df35bc3a0fb567e8a2d408261c217e0`, tree
+`c56e477e704dfbf500038848339a84214a56574f`, with a clean worktree and
 Fe 26.5.0 (`3dab95f`).
 
 ## Executed evidence
