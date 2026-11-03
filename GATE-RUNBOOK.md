@@ -50,12 +50,15 @@ Inspect only the current shell's affinity:
 taskset -pc $$
 ```
 
-Set `CPUSET` manually to one or two CPU IDs from that allowed list and record the chosen value. Never select more than two logical CPUs. Every build/test command below must retain all four controls:
+Set `CPUSET` manually to one or two CPU IDs from that allowed list and record the chosen value. Never select more than two logical CPUs. Every build/test command below must retain all five controls:
 
 - `RAYON_NUM_THREADS=1`;
 - `CARGO_BUILD_JOBS=1`;
 - `nice -n 15`;
+- `ionice -c 3`;
 - `taskset -c "$CPUSET"` with at most two CPUs.
+
+The fixed wrapper order is `env -> nice -> ionice -> taskset -> timeout -> Fe`. Priority settings are inherited, `taskset` constrains the timeout supervisor and its Fe child to the recorded affinity, and `timeout` remains immediately responsible for signalling and reaping Fe.
 
 No phases run concurrently.
 
@@ -102,7 +105,7 @@ mkdir -p evidence
   printf 'fe='; ./.contest-tools/fe_linux_amd64 --version
   printf 'cpuset=%s\n' "$CPUSET"
 } 2>&1 | tee evidence/00-provenance.log
-sha256sum .contest-tools/fe_linux_amd64 GATE-RUNBOOK.md README.md GATE-LOG.md RED-TEAM.md TEST-MATRIX.md TOOLCHAIN.md gate/fe.toml gate/src/lib.fe > evidence/00-inputs.sha256
+sha256sum .gitignore .contest-tools/fe_linux_amd64 GATE-RUNBOOK.md README.md GATE-LOG.md RED-TEAM.md TEST-MATRIX.md TOOLCHAIN.md gate/fe.toml gate/src/lib.fe > evidence/00-inputs.sha256
 ```
 
 `00-inputs.sha256` does not name itself. Do not alter tracked inputs after this point. Every command log must contain its exit code. In an interactive Bash session, capture each piped command as follows, substituting its concrete command, log, and timeout:
@@ -123,7 +126,7 @@ Stop on nonzero `rc`; diagnostic runs may explain a failure but cannot turn the 
 After a fresh guard pass and budget calculation:
 
 ```text
-env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 720s ./.contest-tools/fe_linux_amd64 build gate --color never 2>&1 | tee evidence/01-build.log
+env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 ionice -c 3 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 720s ./.contest-tools/fe_linux_amd64 build gate --color never 2>&1 | tee evidence/01-build.log
 ```
 
 Record `${PIPESTATUS[0]}` immediately in the same log. The shown `720s` is a ceiling; replace it with the smaller remaining budget when necessary. On success, hash build artifacts without leaving the repository:
@@ -139,7 +142,7 @@ A failed or timed-out build stops all runtime work.
 After another complete guard pass:
 
 ```text
-env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 1500s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --color never 2>&1 | tee evidence/02-tests-full.log
+env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 ionice -c 3 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 1500s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --color never 2>&1 | tee evidence/02-tests-full.log
 ```
 
 Record `${PIPESTATUS[0]}` immediately. This invocation must discover and pass the entire suite, including canonical forwarding, all canonicality and bounds rejections, accepted maximums, the four-byte burner with eight 512-byte inputs, first/last-word input observation, output scratch reuse, reentrancy, capped returndata, and reserve recurrence. A filtered success never substitutes for the full suite.
@@ -149,23 +152,23 @@ Record `${PIPESTATUS[0]}` immediately. This invocation must discover and pass th
 Run each trace below separately, in order, with a new complete guard pass and budget calculation before each invocation. Record `${PIPESTATUS[0]}` in its corresponding log. Clamp every shown `480s` timeout to the remaining budget.
 
 ```text
-env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 480s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter malformed_canonicality_matrix_zero_call_trace_oracle --call-trace --color never 2>&1 | tee evidence/03-trace-malformed.log
+env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 ionice -c 3 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 480s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter malformed_canonicality_matrix_zero_call_trace_oracle --call-trace --color never 2>&1 | tee evidence/03-trace-malformed.log
 ```
 
 ```text
-env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 480s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter bounds_zero_call_trace_oracle --call-trace --color never 2>&1 | tee evidence/04-trace-bounds.log
+env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 ionice -c 3 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 480s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter bounds_zero_call_trace_oracle --call-trace --color never 2>&1 | tee evidence/04-trace-bounds.log
 ```
 
 ```text
-env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 480s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter raw_rejection_hardening_zero_call_trace_oracle --call-trace --color never 2>&1 | tee evidence/05-trace-raw-hardening.log
+env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 ionice -c 3 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 480s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter raw_rejection_hardening_zero_call_trace_oracle --call-trace --color never 2>&1 | tee evidence/05-trace-raw-hardening.log
 ```
 
 ```text
-env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 480s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter value_and_gas_zero_call_trace_oracle --call-trace --color never 2>&1 | tee evidence/06-trace-value-gas.log
+env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 ionice -c 3 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 480s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter value_and_gas_zero_call_trace_oracle --call-trace --color never 2>&1 | tee evidence/06-trace-value-gas.log
 ```
 
 ```text
-env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 480s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter reentrancy_is_rejected_before_nested_validation --call-trace --color never 2>&1 | tee evidence/07-trace-reentrancy.log
+env RAYON_NUM_THREADS=1 CARGO_BUILD_JOBS=1 nice -n 15 ionice -c 3 taskset -c "$CPUSET" timeout --signal=INT --kill-after=30s 480s ./.contest-tools/fe_linux_amd64 test gate --jobs 1 --grouped --filter reentrancy_is_rejected_before_nested_validation --call-trace --color never 2>&1 | tee evidence/07-trace-reentrancy.log
 ```
 
 For the four rejection oracles, inspect every rejected firewall-call subtree. It must contain zero nested `CALL` operations to any destination. The tests intentionally make no post-rejection external query, so any nested `CALL` is proof-killing. For the reentrancy oracle, the initial target call and callback are expected; the callback must reject before another target call, parsing, or scratch use. Save the normalized trace output, not a prose assertion alone.
