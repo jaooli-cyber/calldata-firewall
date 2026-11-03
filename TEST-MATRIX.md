@@ -210,3 +210,22 @@ GO is not established by authorship or semantic checking. It requires all
 runtime assertions above, the four required trace-oracle functions with clean
 failed subtrees, and closure of the independent Red Team gates in
 `RED-TEAM.md`.
+
+## Authoritative execution result
+
+The planning rows above retain their historical pending wording. The final
+evaluated baseline supersedes those statuses:
+
+- Build: RC 0.
+- T01-T12: 12 passed, 0 failed.
+- Required rejection traces: 4 passed; zero target calls.
+- Reentrancy trace: passed with the expected guarded callback sequence.
+- ABI companion/Ethers/Cancun runtime smoke: passed.
+- Shanghai negative-fork smoke: expected invalid opcode, proving the EIP-1153
+  deployment boundary.
+- Evaluated commit:
+  `25722e4c53a3bc160b2bc94e5ad1045a1b2b88d6`.
+- Evidence: `evidence/final-20261103T092200Z`; manifest SHA-256
+  `249ec8c5beb8090d39ef1a7bce970a94b10cb1096a8fb0fec642f0a6d88e13dd`.
+
+Final matrix status: **EXECUTED-PASS / technical GO**.

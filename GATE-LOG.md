@@ -77,19 +77,19 @@ Selector derivation was independently confirmed twice with Fe const evaluation:
 
 Temporary selector probes were removed. The same `fmt --check` and low-priority `fe check gate` commands were repeated successfully after the 08:00Z hardening and after the later selector/alias, maximum-workload burner, and first/last-marker corrections. These are still semantic checks, not runtime evidence.
 
-## Heavy evidence pending the runner
+## Heavy evidence plan (completed later)
 
-Do not mark the gate GO until the coordinator's resource guard is clear and the single authorized runner completes the authoritative serial, low-priority sequence in `GATE-RUNBOOK.md`. That runbook fixes the guard thresholds, CPU/thread limits, margin-aware timeouts, full grouped suite, and one separately retained call trace for each oracle.
+This section recorded the pre-run condition: GO required the authoritative serial, low-priority sequence in `GATE-RUNBOOK.md`. The sequence has now completed and is recorded under Complete empirical gate below.
 
 For the trace oracles, every failed firewall-call subtree must contain no nested CALL of any destination. The filtered raw-hardening, malformed, bounds, and value/gas tests intentionally perform no post-rejection external call, so any nested CALL is proof-killing.
 
-## Current gate state
+## Pre-run gate state (historical)
 
 - Semantic feasibility: PASS.
-- Runtime/build evidence: PENDING.
-- Zero-call trace evidence: PENDING.
-- OOG reserve stress and input/output scratch-reuse evidence: PENDING.
-- Red Team disposition: conditional PLAN B until every pending runtime/trace evidence class passes; eligible for GO only after the criteria in `RED-TEAM.md` close.
+- Runtime/build evidence at that point: PENDING.
+- Zero-call trace evidence at that point: PENDING.
+- OOG reserve stress and scratch-reuse evidence at that point: PENDING.
+- Later final disposition: GO; see Complete empirical gate below.
 
 ## Coordinator resource-policy override
 
@@ -101,4 +101,30 @@ For the trace oracles, every failed firewall-call subtree must contain no nested
   reprioritized, signalled, or stopped.
 - Pre-run snapshot at 2026-11-03T09:04:51Z: 8 logical CPUs, load average
   2.13/2.18/2.24, 11.48 GiB MemAvailable, and 112.64 GiB disk free.
-- The authorized runner remains limited to one Fe job, one Rayon/Cargo job,
+- The authorized runner remained limited to one Fe job, one Rayon/Cargo job,
+  CPUs 6-7, nice level 15, and idle I/O priority.
+
+## Complete empirical gate
+
+- Fresh evaluated baseline: commit
+  `25722e4c53a3bc160b2bc94e5ad1045a1b2b88d6`, tree
+  `2f10a33c5a47381ce89f2f9bb8d9100ec8b7e38d`.
+- Release build RC 0. The expected ABI warning records that the raw receiver
+  cannot be emitted as a typed function.
+- Full grouped suite: 12 passed, 0 failed.
+- Four rejection-oracle traces passed and each contains zero calls to the
+  deployed target. The reentrancy trace contains the expected inner firewall
+  revert, target success, and outer firewall success.
+- A companion ABI fragment was derived using an equivalent Fe typed receiver.
+  The official derived function shape matches the tracked fragment after
+  setting the real receiver's mutability to nonpayable.
+- Ethers 6.17 encoded selector `0x7bd5292b`; EthereumJS VM 10.1.3 executed
+  the actual runtime and decoded the seven-field summary on Cancun.
+- The same runtime reached an invalid opcode on Shanghai, confirming that
+  EIP-1153/Cancun-or-later is a deployment requirement.
+- Evidence: `evidence/final-20261103T092200Z`.
+- Evidence-manifest SHA-256:
+  `249ec8c5beb8090d39ef1a7bce970a94b10cb1096a8fb0fec642f0a6d88e13dd`.
+- Manifest-verification SHA-256:
+  `24a48c777a4dca3eeec0e135559274e5bed052f1f84b37185519b5972b0b3d5a`.
+- Technical verdict: **GO**.

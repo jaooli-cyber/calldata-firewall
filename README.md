@@ -8,9 +8,11 @@ Contest work in this repository began after 2026-11-03T00:00:00Z. The implementa
 
 - Fe 26.5.0 semantic check: PASS.
 - Formatting: PASS.
-- Build and runtime tests: pending the coordinator's resource guard.
-- Zero-nested-CALL trace: pending.
-- Current Red Team disposition: conditional PLAN B, not GO.
+- Release build: PASS.
+- Runtime suite: 12 passed, 0 failed.
+- Five retained call traces: PASS; all rejection oracles have zero target calls.
+- Ethers 6.17 / EthereumJS VM Cancun ABI smoke: PASS.
+- Current Red Team disposition: technical GO.
 
 See `GATE-LOG.md` for evidence and `RED-TEAM.md` for open gates.
 
@@ -66,11 +68,11 @@ The output buffer's capacity caps copied returndata while `RawCallOutcome::retur
 
 Each call receives the same requested gas and zero wei. Before each CALL, current input and output memory expansion has already been paid. The gate then applies Fe stdlib's conservative EIP-150 check adjacent to `raw_call`.
 
-A backwards recurrence reserves enough gas for bounded between-call work, every remaining admission, and final static return encoding. The constants are deliberately conservative but still require runtime stress evidence before GO.
+A backwards recurrence reserves enough gas for bounded between-call work, every remaining admission, and final static return encoding. The eight-call all-gas-burner stress passes under the retained gate evidence.
 
-## Adversarial source matrix (runtime pending)
+## Adversarial runtime matrix
 
-The source contains semantically checked tests intended to cover the cases below. They are not runtime evidence until the single authorized runner executes them:
+The retained suite executed all cases below successfully:
 
 - canonical success plus a reverting target while the batch continues;
 - short envelope, wrong selector with all lower 224 bits preserved and the Probe target asserted intact, zero count, invalid gas, and invalid targets;
@@ -78,10 +80,39 @@ The source contains semantically checked tests intended to cover the cases below
 - second-tail gap/overlap, alternate top-level offsets, suffixes, and padding;
 - full raw-rejection, bounds, and value/gas trace oracles with no post-rejection target query;
 - accepted 8-call/4,096-byte-total and 1,024-byte-per-item boundaries;
-- eight 512-byte, 100,000-gas calls to the official four-byte all-gas burner under a candidate 2,600,000 outer allowance; this is not calibrated until runtime;
+- eight 512-byte, 100,000-gas calls to the official four-byte all-gas burner under a 2,600,000 outer allowance;
 - input scratch reuse across lengths 1,024 -> 0 -> 1, with distinct first- and last-word markers observed by a target;
 - output scratch reuse across bomb -> empty and bomb -> empty-revert;
 - reentrant callback rejection and a 65,536-byte returndata bomb; and
 - reserve monotonicity and saturation.
 
-The single authorized runner should use the exact serial commands recorded in `GATE-LOG.md`; do not start a competing build/test process while RG-STOP is active.
+The exact serial commands and hashes are recorded in `GATE-LOG.md`.
+
+## ABI companion and EVM requirement
+
+The raw receiver intentionally has no typed fields, so Fe's generated ABI
+contains the constructor and custom errors but omits `execute`. The exact
+function fragment is tracked at
+`interfaces/CalldataFirewall.function.abi.json`. It was derived with Fe
+26.5.0 from an equivalent typed message and then tested with Ethers against
+the actual raw runtime. Clients may use the fragment directly or concatenate
+it with the generated ABI entries.
+
+The transient reentrancy guard emits EIP-1153 opcodes. Deployment therefore
+requires Cancun or a later fork with EIP-1153 enabled. The retained smoke test
+executes and decodes successfully on Cancun and reaches an invalid opcode on
+Shanghai, making the fork requirement explicit.
+
+## Final gate evidence
+
+- Evaluated commit: `25722e4c53a3bc160b2bc94e5ad1045a1b2b88d6`.
+- Evaluated tree: `2f10a33c5a47381ce89f2f9bb8d9100ec8b7e38d`.
+- Evidence: `evidence/final-20261103T092200Z` (ignored from Git).
+- Evidence-manifest SHA-256:
+  `249ec8c5beb8090d39ef1a7bce970a94b10cb1096a8fb0fec642f0a6d88e13dd`.
+- Manifest-verification SHA-256:
+  `24a48c777a4dca3eeec0e135559274e5bed052f1f84b37185519b5972b0b3d5a`.
+
+Final technical verdict: **GO**. The generated-ABI warning is expected and
+closed by the tested companion fragment; it is not an unreported integration
+gap.

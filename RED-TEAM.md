@@ -13,17 +13,17 @@ The two protected invariants are:
 
 | ID | Severity | Status | Finding and disposition |
 |---|---:|---|---|
-| RT-01 | S0 | Open | No build or runtime tests have run while RG-STOP is active. A semantic check alone cannot support GO. |
-| RT-02 | S1 | Open | The zero-call property needs an opcode/call trace. State counters are rollback-blind. The wrong-selector case mutates only the high four bytes and asserts the Probe target is intact. Count, element-offset, and length high-bit aliases retain canonical low values, so truncation would reach Probe; U256_MAX cases remain. All no-query traces are pending. |
-| RT-03 | S1 | Open | `BETWEEN_CALL_RESERVE=100000` and `FINAL_RESERVE=300000` are unmeasured. The source test asserts the official burner's deployed code size is four, then sends eight 512-byte calls (4,096 total), each with 100,000 gas. The 2,600,000 outer allowance is a hypothesis, not an exact calibration, until runtime; any late admission failure is proof-killing. |
-| RT-04 | S1 | Open | The transient `TSlot<bool>` guard must be exercised on the selected EVM backend. A compile-only pass does not prove backend/runtime EIP-1153 behavior. |
+| RT-01 | S0 | Closed | Release build and the complete 12-test runtime suite pass on the retained clean baseline. |
+| RT-02 | S1 | Closed | Four retained rejection traces pass and contain zero target calls, including the canonical low-bit/high-bit alias attacks. |
+| RT-03 | S1 | Closed | The eight-call 4,096-byte all-gas-burner workload passes with all eight failures reported and no late admission failure. Exact minimum gas is not claimed. |
+| RT-04 | S1 | Closed | Reentrancy passes in the Fe runner and actual runtime bytecode passes on a Cancun VM. A Shanghai negative smoke proves and documents the EIP-1153 boundary. |
 | RT-05 | S1 | Mitigated | Ordinary Solidity-compatible decoding accepts alternate offsets, trailing bytes, missing padding, and dirty padding. The gate adds exact offset, exact-end, and every-padding-byte checks before forwarding. |
-| RT-06 | S1 | Open | Static code caps `raw_call` output at a touched 64-byte buffer and preserves full length. Source tests now cover bomb -> empty and bomb -> empty-revert, including zero length/word/empty hash; runtime execution is pending. |
-| RT-07 | S1 | Mitigated | Reentrancy could interleave batches or reuse scratch assumptions. The transient guard is checked before parsing and set before the first CALL; a callback fixture expects the exact custom error. Runtime proof is still covered by RT-04. |
+| RT-06 | S1 | Closed | Runtime proves the 64-byte copy cap, full 65,536-byte length, and non-stale bomb -> empty success/revert summaries. |
+| RT-07 | S1 | Closed | The callback fixture and retained trace prove the exact guarded inner rejection and successful outer call. |
 | RT-08 | S2 | Accepted scope | Only the last call's prefix metadata is returned. Per-call results are reduced to aggregate success/failure counts; this is a gate simplification, not a general batch receipt format. |
 | RT-09 | S2 | Accepted scope | The policy rejects precompiles, targets with no current code, the firewall itself, empty batches, value, and heterogeneous targets/gas. This is intentional specialization and must not be advertised as a generic firewall. |
 | RT-10 | S2 | Mitigated | The raw selector is a literal because textual selectors enforce variant arity. The exact typed message remains in source, and Fe independently confirmed `0x7bd5292b`. |
-| RT-11 | S1 | Open | Source instrumentation observes input scratch lengths across 1,024 -> 0 -> 1, distinct first and last words at offsets 0 and 992 for the full payload, and the one-byte prefix after reuse. It has only passed semantic checking; runtime evidence that copying reaches the final word and no length/content is stale is pending. |
+| RT-11 | S1 | Closed | Runtime observes scratch lengths 1,024 -> 0 -> 1, the distinct first/last words, and the final one-byte prefix without stale data. |
 
 ## Algorithmic review
 
@@ -80,3 +80,22 @@ GO requires all of the following:
 PLAN B is appropriate if the strict canonical validator and bounded forwarding work but the recurrence or transient-guard demo needs simplification. In that case, reduce to one forwarded call rather than weakening canonical validation.
 
 KILL if malformed input reaches a target, memory/returndata copying is unbounded, canonical layouts are rejected nondeterministically, the selector cannot be dispatched correctly, or the shared validator cannot pass Fe runtime tests.
+
+## Empirical Red Team closure
+
+- **S0:** none open.
+- All 12 runtime tests and all five retained traces pass on the evaluated
+  baseline `25722e4`.
+- Rejection traces contain no target call; malformed canonical encodings do
+  not cross the forwarding boundary.
+- Eight exhausted callees, maximum count/data, scratch reuse, returndata bomb,
+  and reentrancy behavior meet the declared GO criteria.
+- The raw receiver's generated-ABI omission is closed by the tracked companion
+  fragment and an Ethers-to-actual-runtime smoke test.
+- Deployment compatibility is explicitly limited to Cancun or later with
+  EIP-1153. Shanghai failure was reproduced and is not claimed as supported.
+- **S2:** exact minimum outer gas, peak total VM memory, broader receipt
+  ergonomics, and multi-fork deployment beyond the stated requirement remain
+  outside the gate claim.
+
+Red Team verdict: **GO**, not PLAN B.
