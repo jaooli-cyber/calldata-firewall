@@ -9,6 +9,30 @@ Contest work in this repository began after 2026-11-03T00:00:00Z. The implementa
 
 Official Fe Builders Challenge registration identifier: **FE-014**.
 
+## Quick start
+
+On x86-64 Linux, install GNU Make, `curl`, `sha256sum`, Node.js 20 or later,
+and npm. No global Fe installation is required.
+
+```sh
+make demo
+```
+
+The expected happy path is:
+
+```text
+hit / fail / hit -> attempted 3, succeeded 2, failed 1, bitmap 0b101
+```
+
+Run the complete reproducible gate with:
+
+```sh
+make verify
+```
+
+See `JUDGING.md` for the two-minute review path and `SUBMISSION.md` for the
+public, non-secret contest handoff text.
+
 ## Status
 
 ### Historical viability baseline
@@ -19,15 +43,16 @@ rejection traces, one reentrancy trace, and the Ethers/Cancun smoke all passed.
 That evidence predates the immutable policy and success bitmap; it is a
 historical feasibility result, not evidence for the current interface.
 
-### Current hardening snapshot
+### Submission candidate
 
-Commit `6d3b43ce8ed49f033b0f883a73a404bb8bf5c6bd` is the code snapshot
-for the immutable caller/target/selector policy, exact policy errors,
-constructor rejection coverage, and per-index success bitmap. In the current
-local worktree, `make verify` passes: 14/14 tests, five zero-target-call
-rejection traces plus reentrancy, byte-identical metadata reproduction,
-combined-ABI checks, and an actual-initcode Cancun demo decoding the eight-field
-tuple. The final candidate commit and evidence hashes remain TBD.
+Commit `6d3b43ce8ed49f033b0f883a73a404bb8bf5c6bd` introduced the immutable
+caller/target/selector policy, exact policy errors, constructor rejection
+coverage, and per-index success bitmap. The complete submission candidate is
+identified by annotated tag `fe-014-submission-v1`. From that exact commit,
+`make verify` passes 14/14 tests, five zero-target-call rejection traces plus
+guarded reentrancy, byte-identical metadata reproduction, combined-ABI checks,
+and the Cancun/Shanghai demo. The authoritative full SHA, CI run, and evidence
+manifest digest are recorded with the tag/release and official submission.
 
 See `GATE-LOG.md` for historical evidence, `RED-TEAM.md` for security review,
 and `PROVENANCE.md` for the contest boundary and private history normalization.
@@ -117,7 +142,7 @@ call.
 
 ## Adversarial runtime matrix
 
-The 14-test local suite at the current hardening snapshot covers:
+The 14-test submission-candidate suite covers:
 
 - canonical and inverse success/failure sequences with exact `0b101` and
   `0b010` bitmaps;
@@ -139,9 +164,9 @@ The 14-test local suite at the current hardening snapshot covers:
 - reentrant callback rejection and a 65,536-byte returndata bomb; and
 - reserve monotonicity and saturation.
 
-`GATE-LOG.md` records the historical baseline. The current path is tracked in
-the Makefile, scripts, and CI; `make verify` passes locally. It must be rerun
-unchanged from the final candidate commit before release hashes are recorded.
+`GATE-LOG.md` records the historical baseline. The release gate is tracked in
+the Makefile, scripts, and CI. `make verify` is rerun from the exact tagged
+commit; the external release record retains its full SHA and evidence digest.
 
 ## ABI companion and EVM requirement
 
@@ -183,6 +208,6 @@ requires Cancun or later; no pre-Cancun support is claimed.
 - Manifest-verification SHA-256:
   `24a48c777a4dca3eeec0e135559274e5bed052f1f84b37185519b5972b0b3d5a`.
 
-Historical gate verdict: **GO**. Current local hardening verdict:
-**technical GO**. The final candidate commit and evidence hashes remain TBD;
-`make verify` must pass again from that exact commit before submission.
+Historical gate verdict: **GO**. Submission-candidate verdict: **GO**, with no
+open S0/S1. The full SHA entered in the official form is authoritative;
+`fe-014-submission-v1` is its stable navigation label.

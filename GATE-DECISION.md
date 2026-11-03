@@ -41,9 +41,9 @@ No open S0 or S1 remains for this historical gate claim. Evidence is retained
 at `evidence/final-20261103T092200Z`; its manifest SHA-256 is
 `249ec8c5beb8090d39ef1a7bce970a94b10cb1096a8fb0fec642f0a6d88e13dd`.
 
-## Post-gate hardening snapshot
+## Post-gate submission candidate
 
-Commit `6d3b43ce8ed49f033b0f883a73a404bb8bf5c6bd` adds:
+Commit `6d3b43ce8ed49f033b0f883a73a404bb8bf5c6bd` introduced:
 
 - immutable immediate-caller and target authorization;
 - an immutable 1-3 selector allowlist;
@@ -51,11 +51,11 @@ Commit `6d3b43ce8ed49f033b0f883a73a404bb8bf5c6bd` adds:
 - constructor fail-closed checks and explicit constructor boundary tests; and
 - a per-index EVM-call success bitmap.
 
-The current local worktree passes `make verify`: 14/14 tests, five clean
-rejection traces plus reentrancy, byte-identical metadata, combined ABI, and
-actual-initcode Cancun deployment with eight-field decoding. The same demo
-confirms Shanghai deployment rejection. Technical status is GO locally; only
-the final exact commit and evidence hashes remain TBD.
+The submission candidate referenced by `fe-014-submission-v1` passes
+`make verify`: 14/14 tests, five clean rejection traces plus guarded
+reentrancy, byte-identical metadata, combined-ABI validation, and
+actual-initcode Cancun deployment with eight-field decoding. The demo also
+proves Shanghai deployment rejection. Submission-candidate status is **GO**.
 
 ## Policy decisions and residual limitations
 
@@ -72,5 +72,6 @@ the final exact commit and evidence hashes remain TBD.
 - The API remains intentionally narrow, zero-value, and Cancun-or-later.
 - Exact minimum outer gas and peak total VM memory are not benchmark claims.
 
-A submission verdict requires fresh evidence from the exact hardening candidate;
-the historical GO must not be presented as that evidence.
+Fresh evidence was regenerated from the exact tagged candidate; the historical
+GO remains context, not a substitute. The official form's 40-character SHA is
+the authoritative identity.

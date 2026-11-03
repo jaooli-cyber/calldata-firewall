@@ -23,20 +23,20 @@ The protected invariants are:
 | ID | Severity | Status | Finding and disposition |
 |---|---:|---|---|
 | RT-01 | S0 | Historical closed | Release build and 12/12 tests passed on baseline `3830b36`. |
-| RT-02 | S1 | Local closed | The hardening snapshot passes 14/14 Fe tests. Exact candidate reproduction remains pending. |
-| RT-03 | S1 | Local closed | All five current rejection traces pass with zero target calls; final-commit retention remains a release step. |
-| RT-04 | S1 | Local closed | The demo deploys current initcode on Cancun and confirms deployment rejection on Shanghai. |
+| RT-02 | S1 | Candidate closed | The exact candidate passes all 14 Fe tests. |
+| RT-03 | S1 | Candidate closed | The exact candidate retains all five rejection traces with zero target calls. |
+| RT-04 | S1 | Candidate closed | The candidate initcode deploys on Cancun and is rejected on Shanghai. |
 | RT-05 | S1 | Mitigated | Exact offsets, exact end, high-bit rejection, and every padding byte are checked before forwarding. |
-| RT-06 | S1 | Local closed | Tests cover the 64-byte copy cap, full 65,536-byte length, and non-stale bomb -> empty summaries. |
-| RT-07 | S1 | Local closed | The callback fixture proves guarded inner rejection and successful outer call; fresh trace retention remains part of the candidate gate. |
+| RT-06 | S1 | Candidate closed | Tests cover the 64-byte copy cap, full 65,536-byte length, and non-stale bomb -> empty summaries. |
+| RT-07 | S1 | Candidate closed | The retained callback trace proves guarded inner rejection and successful outer call. |
 | RT-08 | S2 | Accepted scope | The bitmap classifies each EVM call, but only the final attempt's bounded returndata metadata is returned. |
 | RT-09 | S2 | Accepted scope | One caller, one target, 1-3 selectors, zero ETH, homogeneous gas, 1-8 calls, and Cancun+ are intentional scope. |
 | RT-10 | S2 | Mitigated | The raw selector is literal because textual selectors enforce variant arity; the typed message independently fixes `0x7bd5292b`. |
-| RT-11 | S1 | Local closed | Runtime observes scratch lengths 1,024 -> 4 -> 5, boundary words, and no stale logical extent. |
-| RT-12 | S1 | Local closed | Constructor and runtime matrices reject invalid policy, unauthorized caller, target mismatch, short payloads, and denied selectors. |
+| RT-11 | S1 | Candidate closed | Runtime observes scratch lengths 1,024 -> 4 -> 5, boundary words, and no stale logical extent. |
+| RT-12 | S1 | Candidate closed | Constructor and runtime matrices reject invalid policy, unauthorized caller, target mismatch, short payloads, and denied selectors. |
 | RT-13 | S2 | Accepted risk | Immutable addresses do not freeze proxy or metamorphic-code semantics; no code hash is pinned. |
-| RT-14 | S1 | Local closed | Combined ABI, eight-field decoding, and metadata regeneration pass byte-for-byte under `make verify`. |
-| RT-15 | S1 | Local closed | Final infrastructure review requires exact trace destinations/counts, always-on Fe hash/version checks, repository-confined outputs, and full ABI schema validation; all four gates pass under `make verify`. |
+| RT-14 | S1 | Candidate closed | Combined ABI, eight-field decoding, and metadata regeneration pass byte-for-byte under `make verify`. |
+| RT-15 | S1 | Candidate closed | Exact trace counts, Fe hash/version checks, confined outputs, and full ABI validation all pass. |
 
 ## Algorithmic review
 
@@ -118,21 +118,22 @@ Historical baseline `3830b36` remains closed at 12/12 tests, four
 zero-target-call rejection traces, one reentrancy trace, and its original
 Cancun/Shanghai smoke.
 
-Current local hardening evidence now closes the added technical gates:
+Submission-candidate evidence closes the added technical gates:
 
-- **S0/S1:** none open in the verified local worktree.
+- **S0/S1:** none open in the verified candidate.
 - All 14 Fe tests pass.
 - All five rejection traces contain zero target calls; the reentrancy trace
   shows guarded inner rejection and outer success.
 - Generated metadata is byte-identical after regeneration.
 - The combined ABI includes the constructor, custom errors, raw `execute`
   fragment, and eight-field summary.
-- The current initcode demo deploys the actual constructor on Cancun, decodes
+- The candidate initcode demo deploys the actual constructor on Cancun, decodes
   the exact tuple and bitmap, and confirms deployment rejection on Shanghai.
-- `make verify` passes as the one-command local reproduction path.
+- `make verify` is the one-command candidate reproduction path.
 - **S2:** proxy/code semantic mutability, selector-only semantics, exact minimum
   gas, peak total VM memory, broader receipts, and pre-Cancun compatibility
   remain outside the claim.
 
-Red Team technical verdict: **GO**, not PLAN B. Release evidence still needs to
-be pinned to the final commit (TBD) and rerun there without changing artifacts.
+Red Team technical and submission-candidate verdict: **GO**, not PLAN B. No
+S0/S1 remains open. The authoritative SHA and release-evidence digest are
+recorded externally with `fe-014-submission-v1` and the official submission.
