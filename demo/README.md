@@ -5,6 +5,9 @@ The demo executes Fe-generated initcode for a target and for
 encodes the six constructor arguments and the raw `execute` endpoint, then
 decodes and compares the complete eight-field result.
 
+The same constructor deployment is also required to fail with an invalid opcode
+on Shanghai, making the EIP-1153 boundary executable rather than implicit.
+
 It proves the visible scenario `hit / fail / hit -> bitmap 0b101` and records
 EVM message edges. Unauthorized caller, target mismatch, and a denied final
 selector must each revert with the exact custom error and produce zero nested

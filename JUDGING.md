@@ -17,7 +17,9 @@ make demo
 
 The Cancun demo executes Fe-generated initcode rather than injecting runtime
 bytecode. Ethers independently encodes the constructor and endpoint; EthereumJS
-executes the result. The visible happy path is:
+executes the result. The same Fe initcode is also attempted on Shanghai and must
+fail at deployment with an invalid opcode, explicitly demonstrating the
+EIP-1153 boundary. The visible happy path is:
 
 ```text
 hit / fail / hit -> attempted 3, succeeded 2, failed 1, bitmap 0b101
