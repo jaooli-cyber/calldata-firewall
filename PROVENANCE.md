@@ -7,6 +7,8 @@ The Fe Builders Challenge 2026 build window opened at
 created after that boundary. The first implementation work began only after
 the isolated Calldata Firewall gate opened at `2026-11-03T07:30:07Z`.
 
+The official contest registration identifier is **FE-014**.
+
 Precontest work consisted of research, specification, non-compilable
 pseudocode, test planning, and Red Team analysis. It remains separate. No
 precontest implementation or pseudocode was copied into this repository.

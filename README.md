@@ -4,6 +4,8 @@ A specialized Fe gate that accepts exactly one canonical ABI shape, validates th
 
 Contest work in this repository began after 2026-11-03T00:00:00Z. The implementation was authored from scratch after the Calldata Firewall gate opened at 2026-11-03T07:30:07Z. Precontest research and AI assistance are disclosed; no precontest implementation or pseudocode was copied here.
 
+Official Fe Builders Challenge registration identifier: **FE-014**.
+
 ## Gate status
 
 - Fe 26.5.0 semantic check: PASS.
