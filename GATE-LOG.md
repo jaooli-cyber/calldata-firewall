@@ -86,7 +86,19 @@ For the trace oracles, every failed firewall-call subtree must contain no nested
 ## Current gate state
 
 - Semantic feasibility: PASS.
-- Runtime/build evidence: PENDING because RG-STOP is active.
+- Runtime/build evidence: PENDING.
 - Zero-call trace evidence: PENDING.
 - OOG reserve stress and input/output scratch-reuse evidence: PENDING.
 - Red Team disposition: conditional PLAN B until every pending runtime/trace evidence class passes; eligible for GO only after the criteria in `RED-TEAM.md` close.
+
+## Coordinator resource-policy override
+
+- 2026-11-03T09:04Z: the user explicitly clarified that this is a shared
+  machine and authorized concurrent gate work whenever aggregate capacity is
+  sufficient. This supersedes the earlier stop-on-any-external-heavy-work
+  rule for the remaining Calldata Firewall gate only.
+- External work remains out of scope and will not be inspected, modified,
+  reprioritized, signalled, or stopped.
+- Pre-run snapshot at 2026-11-03T09:04:51Z: 8 logical CPUs, load average
+  2.13/2.18/2.24, 11.48 GiB MemAvailable, and 112.64 GiB disk free.
+- The authorized runner remains limited to one Fe job, one Rayon/Cargo job,
