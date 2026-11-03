@@ -5,20 +5,21 @@ separates the frozen 12-test feasibility baseline from the later immutable
 policy and bitmap hardening.
 
 The historical commit `3830b36` passed 12/12 tests, four rejection traces,
-one reentrancy trace, and its original ABI/fork smoke. The current local
-worktree, built on hardening snapshot `6d3b43c`, passes all 14 tests, five
-zero-target-call rejection traces, the reentrancy trace, byte-identical
-metadata regeneration, combined-ABI validation, and the Cancun initcode demo
-through `make verify`. The final candidate commit and evidence hashes are TBD.
+one reentrancy trace, and its original ABI/fork smoke. The submission candidate
+referenced by `fe-014-submission-v1` passes all 14 tests, five zero-target-call
+rejection traces, the guarded reentrancy trace, byte-identical metadata
+regeneration, combined-ABI validation, and the Cancun/Shanghai demo through
+`make verify`.
 
 ## Evidence vocabulary
 
 - **Internal oracle**: an assertion evaluated by a passing Fe test.
 - **Trace oracle**: a property inspected in `--call-trace` output. A reverted
   state change alone cannot prove that no nested call was attempted.
-- **LOCAL EXECUTED-PASS**: the current worktree executed successfully.
-- **Final commit TBD**: the result must be rerun and pinned after the candidate
-  commit is created; local success is not a substitute for that release step.
+- **CANDIDATE EXECUTED-PASS**: `make verify` executed successfully on the exact
+  commit referenced by `fe-014-submission-v1`.
+- **External release record**: the full SHA and evidence-manifest digest are
+  stored with the tag/release and official form to avoid self-reference.
 
 ## Test inventory
 
@@ -31,7 +32,7 @@ Source: `gate/src/lib.fe:845-885`
 | Canonical `hit / fail / hit` batch | `attempted=3`, `succeeded=2`, `failed=1`, `bitmap=0b101`; last word `2`; target hits `2` | None required |
 | Inverse `fail / hit / fail` batch | `attempted=3`, `succeeded=1`, `failed=2`, `bitmap=0b010`; cumulative target hits `3` | None required |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T02 - `malformed_canonicality_matrix_zero_call_trace_oracle`
 
@@ -47,7 +48,7 @@ Source: `gate/src/lib.fe:888-957`
 | Fabricated count `9` without a complete nine-head region | Firewall call fails structurally | Required: no nested `CALL` |
 | Final canonical padding byte removed | Firewall call fails | Required: no nested `CALL` |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T03 - `bounds_zero_call_trace_oracle`
 
@@ -59,7 +60,7 @@ Source: `gate/src/lib.fe:958-1010`
 | One call of `1,025` bytes | Reject per-call limit | Required: no nested `CALL` |
 | Five calls of `1,024` bytes (`5,120` total) | Reject aggregate limit | Required: no nested `CALL` |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T04 - `raw_rejection_hardening_zero_call_trace_oracle`
 
@@ -86,7 +87,7 @@ Source: `gate/src/lib.fe:1011-1242`
 | Firewall itself as target | Self-target rejected | Required: no nested `CALL` |
 | Address `0xdead` with no code | Code-less target rejected | Required: no nested `CALL` |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T05 - `accepted_maximum_count_and_data_boundaries_complete`
 
@@ -97,7 +98,7 @@ Source: `gate/src/lib.fe:1479-1531`
 | Eight selector-prefixed calls of 512 bytes (`4,096` total) | `attempted=8`, `succeeded=8`, `failed=0`, `bitmap=0xff`; sink count `8` | None required |
 | One selector-prefixed call of exactly `1,024` bytes | `attempted=1`, `succeeded=1`, `bitmap=1`; cumulative sink count `9` | None required |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T06 - `value_and_gas_zero_call_trace_oracle`
 
@@ -108,7 +109,7 @@ Source: `gate/src/lib.fe:1532-1554`
 | One wei sent to nonpayable endpoint | Firewall call fails | Required: failed firewall-call subtree contains no nested `CALL` |
 | Outer allowance `150,000` with requested forwarding gas `500,000` | Adjacent admission rejects before target call | Required: no nested `CALL` |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T07 - `eight_exhausted_callees_preserve_suffix_reserves`
 
@@ -118,7 +119,7 @@ Source: `gate/src/lib.fe:1555-1594`
 |---|---|---|
 | Assert burner `extcodesize=4`, then send eight selector-prefixed 512-byte payloads with `100,000` gas each | `attempted=8`, `succeeded=0`, `failed=8`, `bitmap=0`; no late admission revert | Optional diagnostic trace confirms eight target calls |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T08 - `input_scratch_reuse_1024_four_five_is_observable`
 
@@ -128,7 +129,7 @@ Source: `gate/src/lib.fe:1595-1643`
 |---|---|---|
 | Reuse one input buffer for lengths `1,024 -> 4 -> 5`; keep the allowed selector in each payload and boundary markers in the first | Three successes, `bitmap=0b111`; observer sees `1024,4,5`, both boundary markers, selector-only second payload, and selector plus `0xbb` third payload | None required; target observations prove the logical extent is reset |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T09 - `output_scratch_bomb_then_empty_or_failure_is_not_stale`
 
@@ -139,7 +140,7 @@ Source: `gate/src/lib.fe:1644-1701`
 | `65,536`-byte return bomb followed by successful empty return | `succeeded=2`, `failed=0`, `bitmap=0b11`; final length/prefix zero and empty hash | None required |
 | Return bomb followed by empty revert | `succeeded=1`, `failed=1`, `bitmap=0b01`; final length/prefix zero and empty hash | None required |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T10 - `reentrancy_is_rejected_before_nested_validation`
 
@@ -149,7 +150,7 @@ Source: `gate/src/lib.fe:1702-1723`
 |---|---|---|
 | Allowed `attack(address)` target callbacks into the firewall | Nested call returns exact `ReentrantExecution`; outer call succeeds with `bitmap=1` and last prefix word `1` | Reentrancy trace shows callback and guarded rejection |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T11 - `returndata_copy_is_capped_but_full_length_is_reported`
 
@@ -159,7 +160,7 @@ Source: `gate/src/lib.fe:1724-1745`
 |---|---|---|
 | Target returns `65,536` bytes | Call succeeds with `bitmap=1`; full length `65,536` and copied prefix exactly `64` | None required |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T12 - `reserve_recurrence_is_monotone_and_saturating`
 
@@ -170,7 +171,7 @@ Source: `gate/src/lib.fe:1746-1754`
 | Three-call reserve recurrence at `200,000` gas | `reserve[0] > reserve[1] > reserve[2]` and final entry equals `FINAL_RESERVE` | None; pure internal assertion |
 | Admission requirement with both inputs `U256_MAX` | Saturates to `U256_MAX` without wrapping | None; pure internal assertion |
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T13 - `constructor_policy_matrix_is_fail_closed`
 
@@ -188,7 +189,7 @@ Source: `gate/src/lib.fe:1244-1366`
 The last two rows are deliberate policy decisions. Selector count marks active
 slots, and the caller and target roles need not be different addresses.
 
-Status: **LOCAL EXECUTED-PASS; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS**.
 
 ### T14 - `policy_rejections_zero_target_call_trace_oracle`
 
@@ -202,7 +203,7 @@ Source: `gate/src/lib.fe:1368-1477`
 | Denied selector at index `0` | Exact `DisallowedSelector(0,0xdeadbeef)` | Required: no target `CALL` |
 | Allowed index `0` plus denied selector at index `1` | Exact `DisallowedSelector(1,0xdeadbeef)` | Required: whole preflight completes before any target `CALL` |
 
-Status: **LOCAL EXECUTED-PASS; required trace clean; final commit TBD**.
+Status: **CANDIDATE EXECUTED-PASS; required trace clean**.
 
 
 ## Call-trace inspection contract
@@ -227,7 +228,7 @@ evidence classes. Passing the former does not close the latter.
 
 ## GO evidence map
 
-| GO class | Coverage | Current local evidence |
+| GO class | Coverage | Candidate evidence |
 |---|---|---|
 | Canonical forwarding, classification, and bitmap indexing | T01 | Pass for `101` and `010` patterns |
 | Raw rejection before target call | T02, T03, T04, T06, T14 | Runtime assertions pass and all five traces are clean |
@@ -241,16 +242,15 @@ evidence classes. Passing the former does not close the latter.
 | Reserve recurrence | T12 and T07 | Pure recurrence and empirical stress pass |
 | ABI/runtime integration | Combined ABI and demo | Cancun initcode/eight-field decode pass; Shanghai deployment rejection passes |
 
-All current rows are locally closed by `make verify`. Release evidence still
-requires the same command and trace inspection from the final exact commit
-(TBD), with byte-identical generated metadata.
+All rows are closed by `make verify` on the exact submission candidate,
+including required trace inspection and byte-identical metadata regeneration.
 
 ## Authoritative execution result
 
 Historical baseline `3830b36` remains frozen at 12/12 tests, four clean
 rejection traces, one reentrancy trace, and its original ABI/fork smoke.
 
-The current local worktree, built on hardening snapshot `6d3b43c`, now has:
+The submission candidate referenced by `fe-014-submission-v1` has:
 
 - `make verify`: pass;
 - generated metadata regeneration: byte-identical;
@@ -260,7 +260,7 @@ The current local worktree, built on hardening snapshot `6d3b43c`, now has:
 - combined constructor/errors/raw-function ABI: pass;
 - actual Cancun initcode/eight-field decode: pass;
 - Shanghai deployment rejection proves the Cancun+ EIP-1153 boundary; and
-- final candidate commit and evidence hashes: **TBD**.
+- the full SHA and evidence digest are retained in the external release record.
 
-Current local matrix status: **EXECUTED-PASS / technical GO**. Release status is
-not pinned until the same verification passes from the final exact commit.
+Candidate matrix status: **EXECUTED-PASS / GO**. The official form's full SHA
+is authoritative; the annotated tag is its stable navigation label.

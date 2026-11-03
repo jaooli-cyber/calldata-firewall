@@ -28,4 +28,18 @@ jobs:
           cache: npm
           cache-dependency-path: demo/package-lock.json
       - name: Verify project
+        if: ${{ !startsWith(github.ref, 'refs/tags/fe-014-submission-v') }}
         run: make verify
+      - name: Verify and package release evidence
+        if: ${{ startsWith(github.ref, 'refs/tags/fe-014-submission-v') }}
+        run: make release-evidence EVIDENCE_TAG="$GITHUB_REF_NAME"
+      - name: Upload release evidence
+        if: ${{ startsWith(github.ref, 'refs/tags/fe-014-submission-v') }}
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: FE-014-evidence-${{ github.ref_name }}
+          path: build/release-evidence/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90

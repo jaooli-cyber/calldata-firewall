@@ -1,16 +1,19 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
+.NOTPARALLEL: verify release-evidence
 
 FE ?= build/tools/fe
 override OUT_DIR := build
 override TRACE_DIR := build/traces
 NODE ?= node
 NPM ?= npm
+EVIDENCE_TAG ?=
+EVIDENCE_PRE_TAG ?= 0
 
-.PHONY: help toolchain fmt check build test traces abi abi-check metadata-repro demo-deps demo verify
+.PHONY: help toolchain fmt check build test traces abi abi-check metadata-repro demo-deps demo verify release-evidence
 
 help:
-	@echo "Targets: fmt check build test traces abi-check metadata-repro demo verify"
+	@echo "Targets: fmt check build test traces abi-check metadata-repro demo verify release-evidence"
 	@echo "Fe binary: $(FE) (official SHA-256 and version are always verified)"
 
 $(FE):
@@ -81,3 +84,9 @@ demo: abi-check demo-deps
 	"$(NODE)" demo/run.mjs --artifacts "$(OUT_DIR)"
 
 verify: fmt check build test abi-check metadata-repro traces demo
+
+release-evidence:
+	@test -n "$(EVIDENCE_TAG)" || { \
+		echo "usage: make release-evidence EVIDENCE_TAG=fe-014-submission-v1" >&2; exit 1; }
+	EVIDENCE_PRE_TAG="$(EVIDENCE_PRE_TAG)" \
+		./scripts/release-evidence.sh "$(EVIDENCE_TAG)"
